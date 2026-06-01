@@ -36,6 +36,28 @@ function Get-ClaudeUsage($accessToken) {
     } catch { return $null }
 }
 
+# Format the reset times into a short, human line (local time). The 5h limit is
+# close so it's shown as a countdown; the weekly limit is shown as a date+time.
+function Format-Resets($u) {
+    if (-not $u) { return $null }
+    $now   = Get-Date
+    $parts = @()
+    try {
+        $r5 = [datetimeoffset]::Parse($u.five_hour.resets_at).LocalDateTime
+        $d  = $r5 - $now
+        if ($d.TotalSeconds -gt 0) {
+            $rel = if ($d.TotalHours -ge 1) { "{0}h{1:00}m" -f [int]$d.TotalHours, $d.Minutes } else { "{0}m" -f [int]$d.TotalMinutes }
+            $parts += "5h resets in $rel ($($r5.ToString('HH:mm')))"
+        }
+    } catch {}
+    try {
+        $r7 = [datetimeoffset]::Parse($u.seven_day.resets_at).LocalDateTime
+        $parts += "7d resets $($r7.ToString('ddd MMM d, HH:mm'))"
+    } catch {}
+    if ($parts.Count) { return ($parts -join '   |   ') }
+    return $null
+}
+
 # -- Load saved accounts (exclude backups / non-account files) -----------------
 $accounts = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notlike 'backup-*' }
@@ -73,6 +95,8 @@ for ($i = 0; $i -lt $list.Count; $i++) {
     $u = Get-ClaudeUsage $list[$i].Token
     $usageStr = if ($u) { "  5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization } else { "  usage n/a" }
     Write-Host ("  [{0}] {1} {2,-32}{3}" -f ($i + 1), $mark, $list[$i].Email, $usageStr)
+    $resetStr = Format-Resets $u
+    if ($resetStr) { Write-Host ("        $resetStr") -ForegroundColor DarkGray }
 }
 Write-Host "  (* = current   |   lower % = more headroom)" -ForegroundColor DarkGray
 Write-Host ""

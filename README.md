@@ -87,7 +87,9 @@ You'll see a menu like:
 ```
 === Switch Claude account ===
   [1] * you@example.com           5h  12% / 7d   8% used
+        5h resets in 4h15m (21:49)   |   7d resets Sun Jun 7, 02:29
   [2]   work@example.com          5h  47% / 7d  31% used
+        5h resets in 1h02m (18:36)   |   7d resets Fri Jun 5, 09:00
   (* = current   |   lower % = more headroom)
 ```
 
