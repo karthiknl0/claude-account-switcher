@@ -88,10 +88,9 @@ foreach ($pf in $profiles) {
     Set-Content -Path $pf -Value $c -Encoding UTF8
 }
 
-# 3. Desktop shortcut
-Write-Host "[3/3] Creating Desktop shortcut..." -ForegroundColor Cyan
+# 3. Desktop shortcuts (one per switcher)
+Write-Host "[3/3] Creating Desktop shortcuts..." -ForegroundColor Cyan
 $desktop = [Environment]::GetFolderPath('Desktop')
-$lnk     = Join-Path $desktop 'Claude Switch Account.lnk'
 $psExe   = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 $icon = $null
@@ -102,14 +101,18 @@ if ($pkg) {
 }
 
 $ws = New-Object -ComObject WScript.Shell
-$sc = $ws.CreateShortcut($lnk)
-$sc.TargetPath       = $psExe
-$sc.Arguments        = "-ExecutionPolicy Bypass -NoProfile -File `"$SwitchPath`""
-$sc.WorkingDirectory = $env:USERPROFILE
-if ($icon) { $sc.IconLocation = $icon }
-$sc.Description       = 'Switch the active Claude account and restart the Claude desktop app'
-$sc.WindowStyle      = 1
-$sc.Save()
+function New-SwitchShortcut($name, $scriptPath, $desc) {
+    $sc = $ws.CreateShortcut((Join-Path $desktop $name))
+    $sc.TargetPath       = $psExe
+    $sc.Arguments        = "-ExecutionPolicy Bypass -NoProfile -File `"$scriptPath`""
+    $sc.WorkingDirectory = $env:USERPROFILE
+    if ($icon) { $sc.IconLocation = $icon }
+    $sc.Description       = $desc
+    $sc.WindowStyle      = 1
+    $sc.Save()
+}
+New-SwitchShortcut 'Claude Switch Account.lnk' $SwitchPath   'Switch the Claude desktop app account'
+New-SwitchShortcut 'Claude Code Switch.lnk'    $CcSwitchPath 'Switch the Claude Code (CLI) account'
 
 Write-Host ""
 Write-Host "Done! Claude Account Switcher is installed." -ForegroundColor Green
