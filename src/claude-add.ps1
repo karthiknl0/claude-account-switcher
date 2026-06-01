@@ -26,13 +26,15 @@ if (Test-Path $configPath) {
         $cfg  = Get-Content $configPath -Raw | ConvertFrom-Json
         $raw  = $cfg.'oauth:tokenCache'
         if ($raw) {
-            $bytes     = [Convert]::FromBase64String($raw)
-            $encrypted = $bytes[3..($bytes.Length - 1)]   # strip v10 prefix
-            $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                $encrypted, $null,
-                [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-            $tokenParsed = [System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json
-            $blob = $raw
+            $blob = $raw   # store the blob regardless of whether we can decrypt it
+            try {
+                $bytes     = [Convert]::FromBase64String($raw)
+                $encrypted = $bytes[3..($bytes.Length - 1)]   # strip v10 prefix
+                $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                    $encrypted, $null,
+                    [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+                $tokenParsed = [System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json
+            } catch {}
         }
     } catch {}
 }
