@@ -36,8 +36,9 @@ function Get-ClaudeUsage($accessToken) {
     } catch { return $null }
 }
 
-# -- Load saved accounts -------------------------------------------------------
-$accounts = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue
+# -- Load saved accounts (exclude backups / non-account files) -----------------
+$accounts = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notlike 'backup-*' }
 if (-not $accounts) {
     Write-Host "No saved Claude Code accounts." -ForegroundColor Yellow
     Write-Host "Log into Claude Code (/login), then run 'claude-code-add' to save each account." -ForegroundColor Yellow
@@ -53,6 +54,7 @@ if (Test-Path $cred) {
 $list = @()
 foreach ($a in $accounts) {
     try { $j = Get-Content $a.FullName -Raw | ConvertFrom-Json } catch { continue }
+    if (-not $j.email -or -not $j.credentials) { continue }   # skip non-account files
     $list += [pscustomobject]@{
         Email = $j.email
         File  = $a.FullName
@@ -87,13 +89,15 @@ if ($chosen.Token -and $chosen.Token -eq $liveToken) {
     Start-Sleep -Seconds 2; return
 }
 
-# Back up current creds, then write the chosen account's creds (no BOM).
+# Back up current creds (in a hidden subfolder so they never show in the picker).
 New-Item -ItemType Directory -Force -Path (Split-Path $cred) | Out-Null
+$backupDir = Join-Path $store '.backups'
+New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 if (Test-Path $cred) {
-    Copy-Item $cred (Join-Path $store ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
+    Copy-Item $cred (Join-Path $backupDir ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
 }
-Get-ChildItem $store -Filter 'backup-*.credentials.json' -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -Skip 3 | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem $backupDir -Filter 'backup-*.credentials.json' -ErrorAction SilentlyContinue |
+    Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue
 
 $json = $chosen.Creds | ConvertTo-Json -Depth 20
 [System.IO.File]::WriteAllText($cred, $json, (New-Object System.Text.UTF8Encoding($false)))
