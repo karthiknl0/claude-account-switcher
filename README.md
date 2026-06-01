@@ -1,13 +1,15 @@
 # Claude Account Switcher
 
 Switch between multiple **Anthropic Claude** accounts (e.g. several Pro/Max
-accounts you own) on Windows — pick one from a quick menu and the **Claude
-desktop app** restarts logged into it.
+accounts you own) on Windows. One install gives you **two switchers**:
 
-The Claude desktop app has no built-in account switcher. This saves each
-account's login and swaps it on demand, with a Desktop shortcut for one-click
-switching and a usage readout so you can see which account has headroom.
-**No npm required** (Node.js only enables the optional usage display).
+- **Desktop app** — flip the **Claude desktop app** (claude.ai chats) between
+  accounts, with a Desktop shortcut and a usage readout.
+- **Claude Code CLI** — flip **Claude Code** (`claude`) between accounts; since
+  your project transcripts are shared across accounts, you can hit a limit,
+  switch, and `claude --resume` to continue the *same work* on another account.
+
+Neither app has a built-in account switcher — this adds both. **No npm required.**
 
 ---
 
@@ -38,12 +40,16 @@ irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/in
 
 This installs:
 
-- `~/.claude-tools/claude-switch.ps1` and `claude-add.ps1`
-- `claude-switch-account`, `claude-add-account`, `claude-switch-update` commands
-  in your PowerShell profiles
-- a **"Claude Switch Account"** shortcut on your Desktop
+- Scripts in `~/.claude-tools/`
+- PowerShell commands: `claude-add-account`, `claude-switch-account` (desktop app);
+  `claude-code-add`, `claude-code-switch` (Claude Code CLI); `claude-switch-update`
+- a **"Claude Switch Account"** shortcut on your Desktop (for the desktop app)
 
 **Then open a new PowerShell window** so the commands load.
+
+> Which one do you want? Use the **desktop-app** commands to switch the Claude
+> app's chats. Use the **Claude Code** commands to switch which account your
+> `claude` coding sessions run under (see the Claude Code section below).
 
 ---
 
@@ -94,6 +100,38 @@ account.
 > The **usage readout** (5-hour / 7-day % used) needs [Node.js](https://nodejs.org)
 > installed; without it the menu just lists emails. An account whose saved token
 > has expired shows `usage n/a` until you next switch to it.
+
+---
+
+## Switching Claude Code (CLI) accounts
+
+The steps above switch the **desktop app**. To switch which account your
+**Claude Code** (`claude`) sessions run under — handy when you hit a usage limit
+mid-task — use the `claude-code-*` commands. Claude Code stores its login in a
+simple credentials file, so this is a fast, safe swap.
+
+**Save each account** (one-time):
+
+1. In Claude Code, `/login` as your first account.
+2. Run `claude-code-add` → enter its email.
+3. Answer **y** to "Add ANOTHER account?" — your login is cleared locally (not
+   logged out), so the saved one stays valid.
+4. `/login` as the next account, run `claude-code-add` again. Repeat; answer
+   **n** on the last.
+
+**Switch + continue your work:**
+
+```powershell
+claude-code-switch     # pick the account (shows usage; * = current)
+claude --resume        # continue the same conversation under the new account
+```
+
+Because your project transcripts live in `~/.claude/projects/` (shared across
+accounts), `claude --resume` picks up exactly where you left off — now billed to
+the account you switched to.
+
+> Close any open Claude Code session before switching so it re-reads the new
+> login. Usage shows here **without** Node (the CLI token is read directly).
 
 ---
 

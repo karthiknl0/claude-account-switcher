@@ -17,6 +17,8 @@ $RawBase     = 'https://raw.githubusercontent.com/karthiknl0/claude-account-swit
 $ToolsDir    = Join-Path $env:USERPROFILE '.claude-tools'
 $SwitchPath  = Join-Path $ToolsDir 'claude-switch.ps1'
 $AddPath     = Join-Path $ToolsDir 'claude-add.ps1'
+$CcSwitchPath= Join-Path $ToolsDir 'claude-code-switch.ps1'
+$CcAddPath   = Join-Path $ToolsDir 'claude-code-add.ps1'
 $VersionPath = Join-Path $ToolsDir '.version'
 
 Write-Host ""
@@ -26,8 +28,10 @@ Write-Host "=== Claude Account Switcher - installer ===" -ForegroundColor Cyan
 Write-Host "[1/3] Installing scripts to $ToolsDir ..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
 try {
-    Invoke-RestMethod -Uri "$RawBase/src/claude-switch.ps1" -OutFile $SwitchPath
-    Invoke-RestMethod -Uri "$RawBase/src/claude-add.ps1"    -OutFile $AddPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-switch.ps1"      -OutFile $SwitchPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-add.ps1"         -OutFile $AddPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-code-switch.ps1" -OutFile $CcSwitchPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-code-add.ps1"    -OutFile $CcAddPath
 } catch {
     Write-Host "ERROR: could not download scripts from GitHub." -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
@@ -42,7 +46,7 @@ try {
 } catch {}
 
 # 2. Add commands to PowerShell profiles (5.1 + 7)
-Write-Host "[2/3] Adding 'claude-switch-account' / 'claude-add-account' / 'claude-switch-update' to your PowerShell profiles..." -ForegroundColor Cyan
+Write-Host "[2/3] Adding desktop + Claude Code switch commands to your PowerShell profiles..." -ForegroundColor Cyan
 $docs = [Environment]::GetFolderPath('MyDocuments')   # honours OneDrive redirection
 $profiles = @(
     (Join-Path $docs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1'),
@@ -54,9 +58,13 @@ $beginMark = '# >>> claude-account-switcher >>>'
 $endMark   = '# <<< claude-account-switcher <<<'
 $func = @"
 $beginMark
-# Claude desktop account switcher (managed by claude-account-switcher installer)
+# Claude account switcher (managed by claude-account-switcher installer)
+# Desktop app (claude.ai chats):
 function claude-switch-account { & "$SwitchPath" }
 function claude-add-account    { & "$AddPath" }
+# Claude Code CLI (coding work / usage):
+function claude-code-switch    { & "$CcSwitchPath" }
+function claude-code-add       { & "$CcAddPath" }
 function claude-switch-update {
     Write-Host "Updating Claude Account Switcher..." -ForegroundColor Cyan
     irm $RawBase/install.ps1 | iex
@@ -106,11 +114,14 @@ $sc.Save()
 Write-Host ""
 Write-Host "Done! Claude Account Switcher is installed." -ForegroundColor Green
 Write-Host ""
-Write-Host "Open a NEW PowerShell window so the commands load, then:" -ForegroundColor Cyan
-Write-Host "  1. Save each account: log into it in the Claude app, then run:" -ForegroundColor Gray
-Write-Host "       claude-add-account" -ForegroundColor Gray
-Write-Host "  2. To switch: double-click 'Claude Switch Account' on your Desktop," -ForegroundColor Gray
-Write-Host "     or run  claude-switch-account  in a STANDALONE PowerShell window." -ForegroundColor Gray
-Write-Host "     (The switch closes the Claude app to reload the login - don't run it" -ForegroundColor DarkGray
-Write-Host "      from inside a Claude session you care about.)" -ForegroundColor DarkGray
-Write-Host "  3. To update later: run  claude-switch-update  (or re-run the install line)." -ForegroundColor Gray
+Write-Host "Open a NEW PowerShell window so the commands load. Two switchers:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  DESKTOP APP (claude.ai chats):" -ForegroundColor Gray
+Write-Host "    claude-add-account      save each account (don't use the app's Log out)" -ForegroundColor Gray
+Write-Host "    claude-switch-account   switch (also on the Desktop shortcut)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  CLAUDE CODE CLI (coding work + usage):" -ForegroundColor Gray
+Write-Host "    claude-code-add         save each account (after /login in Claude Code)" -ForegroundColor Gray
+Write-Host "    claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  claude-switch-update      update to the latest version" -ForegroundColor Gray
