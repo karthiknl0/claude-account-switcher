@@ -12,6 +12,8 @@ $store      = Join-Path $env:USERPROFILE '.claude-accounts'
 
 Write-Host ""
 Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
+Write-Host "Make sure you are logged into the account you want to save in the Claude app." -ForegroundColor DarkGray
+Write-Host ""
 
 # ── Locate the token ──────────────────────────────────────────────────────────
 $blob        = $null   # encrypted blob (new format)
@@ -78,7 +80,15 @@ if (-not $email) {
     }
 }
 
-if (-not $email) { $email = "account-" + (Get-Date -Format 'yyyyMMddHHmmss') }
+# If all auto-detection failed, ask the user
+if (-not $email) {
+    Write-Host "Could not auto-detect the account email." -ForegroundColor Yellow
+    $email = Read-Host "Enter the email address for this Claude account"
+    if ([string]::IsNullOrWhiteSpace($email)) {
+        Write-Host "No email provided - cancelled." -ForegroundColor Red
+        Start-Sleep -Seconds 2; return
+    }
+}
 
 # ── Save snapshot ─────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force -Path $store | Out-Null
