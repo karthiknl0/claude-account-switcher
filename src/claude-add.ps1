@@ -1,36 +1,96 @@
-# Snapshot the Claude account that is CURRENTLY logged into ~/.claude into the
-# switcher store, so it can be switched to later. Run this while the desktop app
-# (or CLI) is logged in as the account you want to save.
+# Snapshot the Claude account currently logged in and save it to ~/.claude-accounts
+# so it can be switched to later. Works with both storage formats:
+#   - New (Electron safeStorage): %APPDATA%\Claude\config.json -> oauth:tokenCache
+#   - Legacy (.credentials.json): ~/.claude/.credentials.json  -> claudeAiOauth
 
-$store = Join-Path $env:USERPROFILE '.claude-accounts'
-$cred  = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfg   = Join-Path $env:USERPROFILE '.claude\.claude.json'
+Add-Type -AssemblyName System.Security
 
-if (-not (Test-Path $cred)) {
-    Write-Host "No ~/.claude/.credentials.json found - log into Claude first." -ForegroundColor Red
-    Start-Sleep -Seconds 2; return
+$configPath = Join-Path $env:APPDATA    'Claude\config.json'
+$credPath   = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$cfgPath    = Join-Path $env:USERPROFILE '.claude\.claude.json'
+$store      = Join-Path $env:USERPROFILE '.claude-accounts'
+
+Write-Host ""
+Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
+
+# ── Locate the token ──────────────────────────────────────────────────────────
+$blob        = $null   # encrypted blob (new format)
+$legacyCred  = $null   # plaintext token (legacy format)
+$tokenParsed = $null   # decrypted token object (for email extraction)
+
+# Try new format first: %APPDATA%\Claude\config.json
+if (Test-Path $configPath) {
+    try {
+        $cfg  = Get-Content $configPath -Raw | ConvertFrom-Json
+        $raw  = $cfg.'oauth:tokenCache'
+        if ($raw) {
+            $bytes     = [Convert]::FromBase64String($raw)
+            $encrypted = $bytes[3..($bytes.Length - 1)]   # strip v10 prefix
+            $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                $encrypted, $null,
+                [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            $tokenParsed = [System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json
+            $blob = $raw
+        }
+    } catch {}
 }
 
-$c = Get-Content $cred -Raw | ConvertFrom-Json
-if (-not $c.claudeAiOauth) {
-    Write-Host "No Claude OAuth token in .credentials.json - nothing to save." -ForegroundColor Red
-    Start-Sleep -Seconds 2; return
+# Fall back to legacy ~/.claude/.credentials.json
+if (-not $blob -and (Test-Path $credPath)) {
+    try {
+        $cred = Get-Content $credPath -Raw | ConvertFrom-Json
+        if ($cred.claudeAiOauth) {
+            $legacyCred  = $cred.claudeAiOauth
+            $tokenParsed = $cred.claudeAiOauth
+        }
+    } catch {}
 }
 
-# Work out a human label (the account email) from .claude.json if available.
+if (-not $blob -and -not $legacyCred) {
+    Write-Host "No Claude login found." -ForegroundColor Red
+    Write-Host "Open the Claude desktop app, log in, then re-run this." -ForegroundColor Red
+    Start-Sleep -Seconds 3; return
+}
+
+# ── Get the account email ─────────────────────────────────────────────────────
 $email = $null
-if (Test-Path $cfg) {
-    try { $email = (Get-Content $cfg -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
-}
-if ([string]::IsNullOrWhiteSpace($email)) { $email = "account-" + (Get-Date -Format 'yyyyMMddHHmmss') }
 
+# 1. Direct field on token object
+if ($tokenParsed.email)                   { $email = $tokenParsed.email }
+if (-not $email -and $tokenParsed.claudeAiOauth.email) { $email = $tokenParsed.claudeAiOauth.email }
+
+# 2. ~/.claude/.claude.json
+if (-not $email -and (Test-Path $cfgPath)) {
+    try { $email = (Get-Content $cfgPath -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
+}
+
+# 3. Decode JWT access token
+if (-not $email) {
+    $at = $tokenParsed.accessToken
+    if (-not $at) { $at = $tokenParsed.claudeAiOauth.accessToken }
+    if ($at) {
+        try {
+            $parts = $at -split '\.'
+            $pad   = 4 - ($parts[1].Length % 4)
+            $b64   = if ($pad -ne 4) { $parts[1] + ('=' * $pad) } else { $parts[1] }
+            $email = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json).'https://api.anthropic.com/profile'.email
+        } catch {}
+    }
+}
+
+if (-not $email) { $email = "account-" + (Get-Date -Format 'yyyyMMddHHmmss') }
+
+# ── Save snapshot ─────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force -Path $store | Out-Null
 $safe = ($email -replace '[^\w.@+-]', '_')
 $file = Join-Path $store "$safe.json"
 
-[ordered]@{ email = $email; claudeAiOauth = $c.claudeAiOauth } |
-    ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+$entry = [ordered]@{ email = $email }
+if ($blob)       { $entry.tokenCache    = $blob }
+else             { $entry.claudeAiOauth = $legacyCred }
 
-Write-Host "Saved Claude account: $email" -ForegroundColor Green
-Write-Host "Stored at: $file" -ForegroundColor DarkGray
+$entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+
+Write-Host "Saved: $email" -ForegroundColor Green
+Write-Host "File:  $file"  -ForegroundColor DarkGray
 Start-Sleep -Seconds 2

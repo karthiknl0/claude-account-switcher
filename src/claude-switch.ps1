@@ -1,66 +1,117 @@
-# Switch the Claude desktop app's account: pick a saved account, swap its OAuth
-# token into ~/.claude/.credentials.json (preserving mcpOAuth and leaving
-# .claude.json untouched), then restart the Claude desktop app.
+# Switch the Claude desktop app's account. Works with both storage formats:
+#   - New (Electron safeStorage): %APPDATA%\Claude\config.json -> oauth:tokenCache
+#   - Legacy (.credentials.json): ~/.claude/.credentials.json  -> claudeAiOauth
 #
-# Shows best-effort usage (5h / 7-day % used) for each account, queried from
-# Anthropic's OAuth usage endpoint with each account's saved token. Tokens
-# expire ~hourly; an account whose cached token has expired shows "usage n/a"
-# until you next switch to it (which refreshes its token).
-#
-# IMPORTANT: run this from a STANDALONE PowerShell window, not from inside Claude
-# - it closes the Claude desktop app (and any session running in it).
+# IMPORTANT: run from a STANDALONE PowerShell window, not inside a Claude session.
 
-$store = Join-Path $env:USERPROFILE '.claude-accounts'
-$cred  = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfg   = Join-Path $env:USERPROFILE '.claude\.claude.json'
+Add-Type -AssemblyName System.Security
 
+$store      = Join-Path $env:USERPROFILE '.claude-accounts'
+$configPath = Join-Path $env:APPDATA    'Claude\config.json'
+$credPath   = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$cfgPath    = Join-Path $env:USERPROFILE '.claude\.claude.json'
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 function Get-ClaudeAumid {
     $a = Get-StartApps | Where-Object { $_.Name -match 'claude' } | Select-Object -First 1
     return $a.AppID
 }
 
-function Get-ClaudeUsage($token) {
-    if (-not $token) { return $null }
+function Decrypt-Blob($blob) {
     try {
-        $h = @{ 'Authorization' = "Bearer $token"; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'oauth-2025-04-20' }
+        $bytes     = [Convert]::FromBase64String($blob)
+        $encrypted = $bytes[3..($bytes.Length - 1)]
+        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encrypted, $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json
+    } catch { return $null }
+}
+
+function Get-AccessToken($entry) {
+    if ($entry.tokenCache) {
+        $t = Decrypt-Blob $entry.tokenCache
+        if ($t.accessToken)              { return $t.accessToken }
+        if ($t.claudeAiOauth.accessToken){ return $t.claudeAiOauth.accessToken }
+    }
+    if ($entry.claudeAiOauth.accessToken) { return $entry.claudeAiOauth.accessToken }
+    return $null
+}
+
+function Get-ClaudeUsage($accessToken) {
+    if (-not $accessToken) { return $null }
+    try {
+        $h = @{
+            'Authorization'    = "Bearer $accessToken"
+            'anthropic-version'= '2023-06-01'
+            'anthropic-beta'   = 'oauth-2025-04-20'
+        }
         return Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $h -TimeoutSec 8
     } catch { return $null }
 }
 
+function Get-ActiveEmail {
+    # New format
+    if (Test-Path $configPath) {
+        try {
+            $blob = (Get-Content $configPath -Raw | ConvertFrom-Json).'oauth:tokenCache'
+            if ($blob) {
+                $t = Decrypt-Blob $blob
+                if ($t.email)                    { return $t.email }
+                if ($t.claudeAiOauth.email)      { return $t.claudeAiOauth.email }
+            }
+        } catch {}
+    }
+    # Legacy format
+    if (Test-Path $cfgPath) {
+        try { return (Get-Content $cfgPath -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
+    }
+    return $null
+}
+
+function Save-Snapshot($email, $entry) {
+    $safe = ($email -replace '[^\w.@+-]', '_')
+    $file = Join-Path $store "$safe.json"
+    $entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+}
+
+# ── Load saved accounts ───────────────────────────────────────────────────────
 $accounts = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue
 if (-not $accounts) {
     Write-Host "No saved Claude accounts." -ForegroundColor Yellow
-    Write-Host "Log into the account in Claude, then run 'claude-add-account' to save it." -ForegroundColor Yellow
+    Write-Host "Log into Claude, then run 'claude-add-account' to save it." -ForegroundColor Yellow
     Start-Sleep -Seconds 3; return
 }
 
-# Which account is active right now (for display only)?
-$currentEmail = $null
-if (Test-Path $cfg) { try { $currentEmail = (Get-Content $cfg -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {} }
+$currentEmail = Get-ActiveEmail
 
 $list = @()
 foreach ($a in $accounts) {
     try { $j = Get-Content $a.FullName -Raw | ConvertFrom-Json } catch { continue }
-    $list += [pscustomobject]@{ Email = $j.email; File = $a.FullName; Token = $j.claudeAiOauth; Usage = $null }
+    $list += [pscustomobject]@{
+        Email       = $j.email
+        File        = $a.FullName
+        Entry       = $j
+        AccessToken = Get-AccessToken $j
+    }
 }
 
+# ── Display picker ────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=== Switch Claude account ===" -ForegroundColor Cyan
 Write-Host "Fetching usage..." -ForegroundColor DarkGray
-foreach ($item in $list) { $item.Usage = Get-ClaudeUsage $item.Token.accessToken }
 
 for ($i = 0; $i -lt $list.Count; $i++) {
-    $mark = if ($list[$i].Email -eq $currentEmail) { "*" } else { " " }
-    if ($list[$i].Usage) {
-        $u = $list[$i].Usage
-        $usage = ("5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization)
-    } else {
-        $usage = "usage n/a"
-    }
-    Write-Host ("  [{0}] {1} {2,-32} {3}" -f ($i + 1), $mark, $list[$i].Email, $usage)
+    $usage = Get-ClaudeUsage $list[$i].AccessToken
+    $mark  = if ($list[$i].Email -eq $currentEmail) { "*" } else { " " }
+    $usageStr = if ($usage) {
+        "5h {0,3}% / 7d {1,3}% used" -f [int]$usage.five_hour.utilization, [int]$usage.seven_day.utilization
+    } else { "usage n/a" }
+    Write-Host ("  [{0}] {1} {2,-36} {3}" -f ($i + 1), $mark, $list[$i].Email, $usageStr)
 }
-Write-Host "  (% used - lower means more usage left)" -ForegroundColor DarkGray
+Write-Host "  (* = current account   |   lower % = more headroom)" -ForegroundColor DarkGray
 Write-Host ""
+
 $pick = Read-Host "Pick an account number (or Enter to cancel)"
 if ([string]::IsNullOrWhiteSpace($pick)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
 if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $list.Count) {
@@ -69,34 +120,60 @@ if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $list.Count)
 $chosen = $list[[int]$pick - 1]
 
 if ($chosen.Email -eq $currentEmail) {
-    Write-Host "Already on $($chosen.Email) - nothing to do." -ForegroundColor Green
+    Write-Host "Already on $($chosen.Email) — nothing to do." -ForegroundColor Green
     Start-Sleep -Seconds 2; return
 }
 
-# Back up current credentials, then swap ONLY claudeAiOauth (keep mcpOAuth).
-New-Item -ItemType Directory -Force -Path $store | Out-Null
-if (Test-Path $cred) {
-    Copy-Item $cred (Join-Path $store ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
-    $cur = Get-Content $cred -Raw | ConvertFrom-Json
+# ── Swap the token ────────────────────────────────────────────────────────────
+if ($chosen.Entry.tokenCache) {
+    # New format: replace oauth:tokenCache in config.json via regex (safe, no JSON round-trip)
+    if (-not (Test-Path $configPath)) {
+        Write-Host "Claude config.json not found at $configPath." -ForegroundColor Red
+        Start-Sleep -Seconds 2; return
+    }
+    $raw    = Get-Content $configPath -Raw
+    $escape = [Regex]::Escape($chosen.Entry.tokenCache)
+    if ($raw -match '"oauth:tokenCache"') {
+        $raw = $raw -replace '"oauth:tokenCache"\s*:\s*"[^"]*"', """oauth:tokenCache"": ""$($chosen.Entry.tokenCache)"""
+    } else {
+        # Key doesn't exist yet — insert before the closing brace
+        $raw = $raw -replace '}\s*$', (", `"oauth:tokenCache`": `"$($chosen.Entry.tokenCache)`"`n}")
+    }
+    Set-Content -Path $configPath -Value $raw -Encoding UTF8
 } else {
-    $cur = [pscustomobject]@{}
+    # Legacy format: swap claudeAiOauth in .credentials.json
+    $cur = if (Test-Path $credPath) { Get-Content $credPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+    $cur | Add-Member -NotePropertyName claudeAiOauth -NotePropertyValue $chosen.Entry.claudeAiOauth -Force
+    $cur | ConvertTo-Json -Depth 20 | Set-Content -Path $credPath -Encoding UTF8
 }
-$cur | Add-Member -NotePropertyName claudeAiOauth -NotePropertyValue $chosen.Token -Force
-$cur | ConvertTo-Json -Depth 20 | Set-Content -Path $cred -Encoding UTF8
 
-Write-Host "Switched credentials to $($chosen.Email). Restarting Claude desktop app..." -ForegroundColor Cyan
+Write-Host "Switched to $($chosen.Email). Restarting Claude..." -ForegroundColor Cyan
 
+# Kill Claude
 Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like "*WindowsApps\Claude_*" } |
+    Where-Object { $_.Path -like "*WindowsApps\Claude_*" -or $_.ProcessName -eq 'Claude' } |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
 $aumid = Get-ClaudeAumid
 if ($aumid) {
     Start-Process "shell:AppsFolder\$aumid"
-    Write-Host "Done - Claude is reopening as $($chosen.Email)." -ForegroundColor Green
-    Write-Host "(The displayed email can take a few seconds to refresh.)" -ForegroundColor DarkGray
+    Write-Host "Done — Claude is reopening as $($chosen.Email)." -ForegroundColor Green
+
+    # Wait for Claude to refresh the token, then re-snapshot so next switch has a fresh token.
+    Write-Host "Waiting for token refresh..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 8
+    if ($chosen.Entry.tokenCache -and (Test-Path $configPath)) {
+        try {
+            $newBlob = (Get-Content $configPath -Raw | ConvertFrom-Json).'oauth:tokenCache'
+            if ($newBlob -and $newBlob -ne $chosen.Entry.tokenCache) {
+                $updated = [ordered]@{ email = $chosen.Email; tokenCache = $newBlob }
+                Save-Snapshot $chosen.Email $updated
+                Write-Host "Token snapshot updated." -ForegroundColor DarkGray
+            }
+        } catch {}
+    }
 } else {
-    Write-Host "Credentials swapped, but the Claude app wasn't found to relaunch - open it manually." -ForegroundColor Yellow
+    Write-Host "Token swapped, but Claude app wasn't found — open it manually." -ForegroundColor Yellow
 }
 Start-Sleep -Seconds 2
