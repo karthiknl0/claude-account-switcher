@@ -50,8 +50,15 @@ if (-not $blob -and (Test-Path $credPath)) {
 
 if (-not $blob -and -not $legacyCred) {
     Write-Host "No Claude login found." -ForegroundColor Red
-    Write-Host "Open the Claude desktop app, log in, then re-run this." -ForegroundColor Red
-    Start-Sleep -Seconds 3; return
+    Write-Host ""
+    Write-Host "Diagnostics:" -ForegroundColor DarkGray
+    Write-Host "  config.json path : $configPath" -ForegroundColor DarkGray
+    Write-Host "  config.json found: $(Test-Path $configPath)" -ForegroundColor DarkGray
+    Write-Host "  running as admin : $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "Open the Claude desktop app, log in, then re-run this" -ForegroundColor Red
+    Write-Host "in a NORMAL (non-Administrator) PowerShell window." -ForegroundColor Red
+    Start-Sleep -Seconds 4; return
 }
 
 # ── Get the account email ─────────────────────────────────────────────────────
