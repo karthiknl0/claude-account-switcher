@@ -28,6 +28,7 @@ $SwitchPath  = Join-Path $ToolsDir 'claude-switch.ps1'
 $AddPath     = Join-Path $ToolsDir 'claude-add.ps1'
 $CcSwitchPath= Join-Path $ToolsDir 'claude-code-switch.ps1'
 $CcAddPath   = Join-Path $ToolsDir 'claude-code-add.ps1'
+$CcDoctorPath= Join-Path $ToolsDir 'claude-code-doctor.ps1'
 $VersionPath = Join-Path $ToolsDir '.version'
 
 # -- Platform detection ($IsWindows etc. only exist on PowerShell Core/7+) -----
@@ -45,6 +46,7 @@ New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
 try {
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-switch.ps1" -OutFile $CcSwitchPath
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-add.ps1"    -OutFile $CcAddPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-code-doctor.ps1" -OutFile $CcDoctorPath
     if ($PlatformWin) {
         Invoke-RestMethod -Uri "$RawBase/src/claude-switch.ps1"  -OutFile $SwitchPath
         Invoke-RestMethod -Uri "$RawBase/src/claude-add.ps1"     -OutFile $AddPath
@@ -84,6 +86,7 @@ function claude-add-account    { & "$AddPath" }
 # Claude Code CLI (coding work / usage):
 function claude-code-switch    { & "$CcSwitchPath" }
 function claude-code-add       { & "$CcAddPath" }
+function claude-code-doctor    { & "$CcDoctorPath" }
 function claude-switch-update {
     Write-Host "Updating Claude Account Switcher..." -ForegroundColor Cyan
     irm $RawBase/install.ps1 | iex
@@ -144,6 +147,7 @@ $endMark
     Write-Host "  CLAUDE CODE CLI (coding work + usage):" -ForegroundColor Gray
     Write-Host "    claude-code-add         save each account (after /login in Claude Code)" -ForegroundColor Gray
     Write-Host "    claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
+    Write-Host "    claude-code-doctor      check setup (platform, credentials, accounts)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  claude-switch-update      update to the latest version" -ForegroundColor Gray
 }
@@ -166,6 +170,7 @@ $beginMark
 # Claude Code account switcher (managed by claude-account-switcher installer)
 claude-code-switch() { pwsh -NoProfile -File "$CcSwitchPath"; }
 claude-code-add()    { pwsh -NoProfile -File "$CcAddPath"; }
+claude-code-doctor() { pwsh -NoProfile -File "$CcDoctorPath"; }
 claude-switch-update() { pwsh -NoProfile -Command "irm $RawBase/install.ps1 | iex"; }
 $endMark
 "@
@@ -203,5 +208,6 @@ $endMark
     Write-Host ""
     Write-Host "  claude-code-add         save each account (after /login in Claude Code)" -ForegroundColor Gray
     Write-Host "  claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
+    Write-Host "  claude-code-doctor      check setup (platform, credentials, accounts)" -ForegroundColor Gray
     Write-Host "  claude-switch-update    update to the latest version" -ForegroundColor Gray
 }

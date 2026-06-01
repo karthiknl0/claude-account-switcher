@@ -48,6 +48,9 @@ claude-code-switch
 > switcher also runs on macOS/Linux with [PowerShell](https://aka.ms/powershell)
 > installed. On macOS the Claude Code login lives in the **Keychain**, so the
 > first read/write may prompt you to *Allow* access.
+>
+> Run **`claude-code-doctor`** any time to verify your setup — it prints the
+> detected platform, credential backend, live-login status, and saved accounts.
 
 ---
 
@@ -63,7 +66,8 @@ This installs:
 
 - Scripts in `~/.claude-tools/`
 - PowerShell commands: `claude-add-account`, `claude-switch-account` (desktop app);
-  `claude-code-add`, `claude-code-switch` (Claude Code CLI); `claude-switch-update`
+  `claude-code-add`, `claude-code-switch`, `claude-code-doctor` (Claude Code CLI);
+  `claude-switch-update`
 - a **"Claude Switch Account"** shortcut on your Desktop (for the desktop app)
 
 **Then open a new PowerShell window** so the commands load.
