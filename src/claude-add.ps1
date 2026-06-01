@@ -1,4 +1,4 @@
-# Snapshot the Claude account currently logged in and save it to ~/.claude-accounts
+﻿# Snapshot the Claude account currently logged in and save it to ~/.claude-accounts
 # so it can be switched to later. Works with both storage formats:
 #   - New (Electron safeStorage): %APPDATA%\Claude\config.json -> oauth:tokenCache
 #   - Legacy (.credentials.json): ~/.claude/.credentials.json  -> claudeAiOauth

@@ -1,4 +1,4 @@
-# Switch the Claude desktop app's account. Works with both storage formats:
+﻿# Switch the Claude desktop app's account. Works with both storage formats:
 #   - New (Electron safeStorage): %APPDATA%\Claude\config.json -> oauth:tokenCache
 #   - Legacy (.credentials.json): ~/.claude/.credentials.json  -> claudeAiOauth
 #
