@@ -6,12 +6,40 @@
 
 Add-Type -AssemblyName System.Security
 
-$store      = Join-Path $env:USERPROFILE '.claude-accounts'
-$configPath = Join-Path $env:APPDATA    'Claude\config.json'
-$credPath   = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfgPath    = Join-Path $env:USERPROFILE '.claude\.claude.json'
+$store    = Join-Path $env:USERPROFILE '.claude-accounts'
+$credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$cfgPath  = Join-Path $env:USERPROFILE '.claude\.claude.json'
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+function Read-FileShared($path) {
+    try {
+        $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        $reader = New-Object System.IO.StreamReader($fs)
+        $text   = $reader.ReadToEnd()
+        $reader.Close(); $fs.Close()
+        return $text
+    } catch { return $null }
+}
+
+# Resolve Claude data files across normal + MSIX (Store) installs (newest first).
+function Get-ClaudeFiles($leaf) {
+    $candidates = @( (Join-Path $env:APPDATA "Claude\$leaf") )
+    $pkgRoot = Join-Path $env:LOCALAPPDATA 'Packages'
+    if (Test-Path $pkgRoot) {
+        Get-ChildItem $pkgRoot -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
+            $candidates += (Join-Path $_.FullName "LocalCache\Roaming\Claude\$leaf")
+        }
+    }
+    $candidates | Where-Object { Test-Path $_ } |
+        Get-Item -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -ExpandProperty FullName -Unique
+}
+
+# All config.json copies (we read the newest, write to ALL so any view stays in sync).
+$configPaths = @(Get-ClaudeFiles 'config.json')
+$configPath  = $configPaths | Select-Object -First 1
+
 function Get-ClaudeAumid {
     $a = Get-StartApps | Where-Object { $_.Name -match 'claude' } | Select-Object -First 1
     return $a.AppID
@@ -51,16 +79,22 @@ function Get-ClaudeUsage($accessToken) {
 }
 
 function Get-ActiveEmail {
-    # New format
-    if (Test-Path $configPath) {
-        try {
-            $blob = (Get-Content $configPath -Raw | ConvertFrom-Json).'oauth:tokenCache'
-            if ($blob) {
-                $t = Decrypt-Blob $blob
-                if ($t.email)                    { return $t.email }
-                if ($t.claudeAiOauth.email)      { return $t.claudeAiOauth.email }
-            }
-        } catch {}
+    # Identify the active account by matching the live tokenCache blob against
+    # our saved snapshots (the blob isn't DPAPI-decryptable, but it's a stable
+    # identifier per account until the token refreshes).
+    if ($configPath) {
+        $raw = Read-FileShared $configPath
+        if ($raw) {
+            try {
+                $liveBlob = ($raw | ConvertFrom-Json).'oauth:tokenCache'
+                if ($liveBlob) {
+                    $hit = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                        try { Get-Content $_.FullName -Raw | ConvertFrom-Json } catch {}
+                    } | Where-Object { $_.tokenCache -eq $liveBlob } | Select-Object -First 1
+                    if ($hit) { return $hit.email }
+                }
+            } catch {}
+        }
     }
     # Legacy format
     if (Test-Path $cfgPath) {
@@ -126,20 +160,21 @@ if ($chosen.Email -eq $currentEmail) {
 
 # ── Swap the token ────────────────────────────────────────────────────────────
 if ($chosen.Entry.tokenCache) {
-    # New format: replace oauth:tokenCache in config.json via regex (safe, no JSON round-trip)
-    if (-not (Test-Path $configPath)) {
-        Write-Host "Claude config.json not found at $configPath." -ForegroundColor Red
+    # New format: replace oauth:tokenCache in EVERY config.json copy (normal + MSIX)
+    if (-not $configPaths -or $configPaths.Count -eq 0) {
+        Write-Host "Claude config.json not found in any known location." -ForegroundColor Red
         Start-Sleep -Seconds 2; return
     }
-    $raw    = Get-Content $configPath -Raw
-    $escape = [Regex]::Escape($chosen.Entry.tokenCache)
-    if ($raw -match '"oauth:tokenCache"') {
-        $raw = $raw -replace '"oauth:tokenCache"\s*:\s*"[^"]*"', """oauth:tokenCache"": ""$($chosen.Entry.tokenCache)"""
-    } else {
-        # Key doesn't exist yet — insert before the closing brace
-        $raw = $raw -replace '}\s*$', (", `"oauth:tokenCache`": `"$($chosen.Entry.tokenCache)`"`n}")
+    foreach ($cp in $configPaths) {
+        $raw = Read-FileShared $cp
+        if (-not $raw) { continue }
+        if ($raw -match '"oauth:tokenCache"') {
+            $raw = $raw -replace '"oauth:tokenCache"\s*:\s*"[^"]*"', """oauth:tokenCache"": ""$($chosen.Entry.tokenCache)"""
+        } else {
+            $raw = $raw -replace '}\s*$', (", `"oauth:tokenCache`": `"$($chosen.Entry.tokenCache)`"`n}")
+        }
+        try { Set-Content -Path $cp -Value $raw -Encoding UTF8 } catch {}
     }
-    Set-Content -Path $configPath -Value $raw -Encoding UTF8
 } else {
     # Legacy format: swap claudeAiOauth in .credentials.json
     $cur = if (Test-Path $credPath) { Get-Content $credPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
@@ -163,9 +198,12 @@ if ($aumid) {
     # Wait for Claude to refresh the token, then re-snapshot so next switch has a fresh token.
     Write-Host "Waiting for token refresh..." -ForegroundColor DarkGray
     Start-Sleep -Seconds 8
-    if ($chosen.Entry.tokenCache -and (Test-Path $configPath)) {
+    if ($chosen.Entry.tokenCache) {
         try {
-            $newBlob = (Get-Content $configPath -Raw | ConvertFrom-Json).'oauth:tokenCache'
+            # Re-resolve in case the app wrote to a different copy on startup.
+            $newPath = Get-ClaudeFiles 'config.json' | Select-Object -First 1
+            $raw     = if ($newPath) { Read-FileShared $newPath } else { $null }
+            $newBlob = if ($raw) { ($raw | ConvertFrom-Json).'oauth:tokenCache' } else { $null }
             if ($newBlob -and $newBlob -ne $chosen.Entry.tokenCache) {
                 $updated = [ordered]@{ email = $chosen.Email; tokenCache = $newBlob }
                 Save-Snapshot $chosen.Email $updated

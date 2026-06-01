@@ -5,18 +5,16 @@
 
 Add-Type -AssemblyName System.Security
 
-$configPath    = Join-Path $env:APPDATA    'Claude\config.json'
-$localState    = Join-Path $env:APPDATA    'Claude\Local State'
-$credPath      = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfgPath       = Join-Path $env:USERPROFILE '.claude\.claude.json'
-$store         = Join-Path $env:USERPROFILE '.claude-accounts'
+$credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$cfgPath  = Join-Path $env:USERPROFILE '.claude\.claude.json'
+$store    = Join-Path $env:USERPROFILE '.claude-accounts'
 
 Write-Host ""
 Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
 Write-Host "Make sure the Claude desktop app is open and you are logged in." -ForegroundColor DarkGray
 Write-Host ""
 
-# ── Read config.json safely (Claude may have it open) ─────────────────────────
+# ── Read a file even if Claude has it open ────────────────────────────────────
 function Read-FileShared($path) {
     try {
         $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
@@ -27,11 +25,35 @@ function Read-FileShared($path) {
     } catch { return $null }
 }
 
+# ── Resolve Claude's data files across normal + MSIX (Store) installs ─────────
+# The Store/MSIX app stores config under its package LocalCache, while the
+# plain install uses %APPDATA%\Claude. We probe all known locations and use
+# whichever actually exists (newest wins).
+function Get-ClaudeFiles($leaf) {
+    $candidates = @(
+        (Join-Path $env:APPDATA "Claude\$leaf")
+    )
+    $pkgRoot = Join-Path $env:LOCALAPPDATA 'Packages'
+    if (Test-Path $pkgRoot) {
+        Get-ChildItem $pkgRoot -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
+            $candidates += (Join-Path $_.FullName "LocalCache\Roaming\Claude\$leaf")
+        }
+    }
+    $candidates | Where-Object { Test-Path $_ } |
+        Get-Item -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -ExpandProperty FullName -Unique
+}
+
+$configPaths = @(Get-ClaudeFiles 'config.json')
+$configPath  = $configPaths | Select-Object -First 1
+$localState  = Get-ClaudeFiles 'Local State' | Select-Object -First 1
+
 # ── Locate the token blob ─────────────────────────────────────────────────────
 $blob       = $null
 $legacyCred = $null
 
-if (Test-Path $configPath) {
+if ($configPath) {
     $raw = Read-FileShared $configPath
     if ($raw) {
         try {
@@ -52,9 +74,9 @@ if (-not $blob -and -not $legacyCred) {
     Write-Host "No Claude login found." -ForegroundColor Red
     Write-Host ""
     Write-Host "Diagnostics:" -ForegroundColor DarkGray
-    Write-Host "  config.json path : $configPath" -ForegroundColor DarkGray
-    Write-Host "  config.json found: $(Test-Path $configPath)" -ForegroundColor DarkGray
-    Write-Host "  running as admin : $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" -ForegroundColor DarkGray
+    Write-Host "  config.json located: $(if ($configPath) { $configPath } else { '(none found)' })" -ForegroundColor DarkGray
+    Write-Host "  paths probed       : $($configPaths.Count)" -ForegroundColor DarkGray
+    Write-Host "  running as admin   : $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Open the Claude desktop app, log in, then re-run this" -ForegroundColor Red
     Write-Host "in a NORMAL (non-Administrator) PowerShell window." -ForegroundColor Red
@@ -65,7 +87,7 @@ if (-not $blob -and -not $legacyCred) {
 $email = $null
 
 # Method 1: AES-256-GCM decrypt via Node.js (new Electron safeStorage format)
-if ($blob -and (Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $localState)) {
+if ($blob -and (Get-Command node -ErrorAction SilentlyContinue) -and $localState -and (Test-Path $localState)) {
     try {
         # DPAPI-decrypt the AES key stored in Local State
         $lsJson     = Read-FileShared $localState
