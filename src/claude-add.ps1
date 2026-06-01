@@ -16,7 +16,7 @@ Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
 Write-Host "Make sure the Claude desktop app is open and you are logged in." -ForegroundColor DarkGray
 Write-Host ""
 
-# ── Read config.json safely (Claude may have it open) ─────────────────────────
+# -- Read config.json safely (Claude may have it open) -------------------------
 function Read-FileShared($path) {
     try {
         $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
@@ -27,7 +27,7 @@ function Read-FileShared($path) {
     } catch { return $null }
 }
 
-# ── Locate the token blob ─────────────────────────────────────────────────────
+# -- Locate the token blob -----------------------------------------------------
 $blob       = $null
 $legacyCred = $null
 
@@ -61,7 +61,7 @@ if (-not $blob -and -not $legacyCred) {
     Start-Sleep -Seconds 4; return
 }
 
-# ── Get the account email ─────────────────────────────────────────────────────
+# -- Get the account email -----------------------------------------------------
 $email = $null
 
 # Method 1: AES-256-GCM decrypt via Node.js (new Electron safeStorage format)
@@ -121,7 +121,7 @@ if (-not $email) {
     }
 }
 
-# ── Save snapshot ─────────────────────────────────────────────────────────────
+# -- Save snapshot -------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $store | Out-Null
 $safe = ($email -replace '[^\w.@+-]', '_')
 $file = Join-Path $store "$safe.json"

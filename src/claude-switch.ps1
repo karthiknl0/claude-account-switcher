@@ -11,7 +11,7 @@ $configPath = Join-Path $env:APPDATA    'Claude\config.json'
 $credPath   = Join-Path $env:USERPROFILE '.claude\.credentials.json'
 $cfgPath    = Join-Path $env:USERPROFILE '.claude\.claude.json'
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 function Get-ClaudeAumid {
     $a = Get-StartApps | Where-Object { $_.Name -match 'claude' } | Select-Object -First 1
     return $a.AppID
@@ -75,7 +75,7 @@ function Save-Snapshot($email, $entry) {
     $entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
 }
 
-# ── Load saved accounts ───────────────────────────────────────────────────────
+# -- Load saved accounts -------------------------------------------------------
 $accounts = Get-ChildItem $store -Filter '*.json' -ErrorAction SilentlyContinue
 if (-not $accounts) {
     Write-Host "No saved Claude accounts." -ForegroundColor Yellow
@@ -96,7 +96,7 @@ foreach ($a in $accounts) {
     }
 }
 
-# ── Display picker ────────────────────────────────────────────────────────────
+# -- Display picker ------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Switch Claude account ===" -ForegroundColor Cyan
 Write-Host "Fetching usage..." -ForegroundColor DarkGray
@@ -120,11 +120,11 @@ if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $list.Count)
 $chosen = $list[[int]$pick - 1]
 
 if ($chosen.Email -eq $currentEmail) {
-    Write-Host "Already on $($chosen.Email) — nothing to do." -ForegroundColor Green
+    Write-Host "Already on $($chosen.Email) - nothing to do." -ForegroundColor Green
     Start-Sleep -Seconds 2; return
 }
 
-# ── Swap the token ────────────────────────────────────────────────────────────
+# -- Swap the token ------------------------------------------------------------
 if ($chosen.Entry.tokenCache) {
     # New format: replace oauth:tokenCache in config.json via regex (safe, no JSON round-trip)
     if (-not (Test-Path $configPath)) {
@@ -136,7 +136,7 @@ if ($chosen.Entry.tokenCache) {
     if ($raw -match '"oauth:tokenCache"') {
         $raw = $raw -replace '"oauth:tokenCache"\s*:\s*"[^"]*"', """oauth:tokenCache"": ""$($chosen.Entry.tokenCache)"""
     } else {
-        # Key doesn't exist yet — insert before the closing brace
+        # Key doesn't exist yet - insert before the closing brace
         $raw = $raw -replace '}\s*$', (", `"oauth:tokenCache`": `"$($chosen.Entry.tokenCache)`"`n}")
     }
     Set-Content -Path $configPath -Value $raw -Encoding UTF8
@@ -158,7 +158,7 @@ Start-Sleep -Seconds 1
 $aumid = Get-ClaudeAumid
 if ($aumid) {
     Start-Process "shell:AppsFolder\$aumid"
-    Write-Host "Done — Claude is reopening as $($chosen.Email)." -ForegroundColor Green
+    Write-Host "Done - Claude is reopening as $($chosen.Email)." -ForegroundColor Green
 
     # Wait for Claude to refresh the token, then re-snapshot so next switch has a fresh token.
     Write-Host "Waiting for token refresh..." -ForegroundColor DarkGray
@@ -174,6 +174,6 @@ if ($aumid) {
         } catch {}
     }
 } else {
-    Write-Host "Token swapped, but Claude app wasn't found — open it manually." -ForegroundColor Yellow
+    Write-Host "Token swapped, but Claude app wasn't found - open it manually." -ForegroundColor Yellow
 }
 Start-Sleep -Seconds 2
