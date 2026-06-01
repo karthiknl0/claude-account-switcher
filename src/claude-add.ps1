@@ -101,6 +101,33 @@ if (Test-Path $cfgFile) {
 
 Write-Host ""
 Write-Host "Saved account: $email" -ForegroundColor Green
-Write-Host "Reopening Claude..." -ForegroundColor DarkGray
-Start-Claude
+Write-Host ""
+
+# Offer to set up the NEXT account. We clear the LOCAL session (delete the
+# session folders + blank the token cache) instead of using the app's "Log out"
+# - logging out revokes the session server-side, which would kill the snapshot
+# we just saved. Clearing locally leaves the saved account valid to switch to.
+$more = Read-Host "Add ANOTHER account now? (clears local login WITHOUT logging out, shows sign-in) [y/N]"
+if ($more -match '^(y|yes)$') {
+    Write-Host "Clearing local session (not logging out $email)..." -ForegroundColor Cyan
+    foreach ($f in $SessionFolders) {
+        $p = Join-Path $root $f
+        if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    $cfgFile = Join-Path $root 'config.json'
+    if (Test-Path $cfgFile) {
+        try {
+            $raw = Get-Content $cfgFile -Raw
+            $raw = [Regex]::Replace($raw, '"oauth:tokenCache"\s*:\s*"[^"]*"', '"oauth:tokenCache": ""')
+            [System.IO.File]::WriteAllText($cfgFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+    }
+    Start-Claude
+    Write-Host ""
+    Write-Host "Claude is reopening at a SIGN-IN screen." -ForegroundColor Green
+    Write-Host "Log in as the NEXT account, then run 'claude-add-account' again." -ForegroundColor Green
+} else {
+    Write-Host "Reopening Claude..." -ForegroundColor DarkGray
+    Start-Claude
+}
 Start-Sleep -Seconds 2

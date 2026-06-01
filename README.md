@@ -31,19 +31,23 @@ This installs:
 
 ## Add your accounts
 
-For each account:
+> **Don't use the app's "Log out" to switch between accounts while adding them.**
+> Logging out revokes that account's session on Anthropic's servers, which kills
+> the snapshot. `claude-add-account` handles this for you: it clears the *local*
+> login (without logging out) so each saved account stays valid.
 
-1. Log into it in the Claude desktop app (account menu → **Log out**, then sign
-   in as that account).
-2. Save its session (this **closes** Claude, copies the session, then reopens it):
+1. Log into your **first** account in the Claude desktop app.
+2. Save it (this closes Claude, copies the session + token, reopens it):
 
    ```powershell
    claude-add-account
    ```
 
    Enter that account's email when prompted.
-
-Repeat for as many accounts as you want.
+3. When it asks **"Add ANOTHER account now?"**, answer **y** — Claude reopens at a
+   fresh sign-in screen *without* logging the first account out.
+4. Sign in as your **next** account, run `claude-add-account` again, and repeat
+   for as many accounts as you want. Answer **n** on the last one.
 
 ---
 
