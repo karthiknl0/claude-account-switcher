@@ -1,4 +1,4 @@
-﻿<#
+<#
     Claude Account Switcher - installer
 
     One-line install (run in PowerShell):
