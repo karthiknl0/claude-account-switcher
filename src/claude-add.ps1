@@ -5,48 +5,46 @@
 
 Add-Type -AssemblyName System.Security
 
-$configPath = Join-Path $env:APPDATA    'Claude\config.json'
-$credPath   = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfgPath    = Join-Path $env:USERPROFILE '.claude\.claude.json'
-$store      = Join-Path $env:USERPROFILE '.claude-accounts'
+$configPath    = Join-Path $env:APPDATA    'Claude\config.json'
+$localState    = Join-Path $env:APPDATA    'Claude\Local State'
+$credPath      = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$cfgPath       = Join-Path $env:USERPROFILE '.claude\.claude.json'
+$store         = Join-Path $env:USERPROFILE '.claude-accounts'
 
 Write-Host ""
 Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
-Write-Host "Make sure you are logged into the account you want to save in the Claude app." -ForegroundColor DarkGray
+Write-Host "Make sure the Claude desktop app is open and you are logged in." -ForegroundColor DarkGray
 Write-Host ""
 
-# ── Locate the token ──────────────────────────────────────────────────────────
-$blob        = $null   # encrypted blob (new format)
-$legacyCred  = $null   # plaintext token (legacy format)
-$tokenParsed = $null   # decrypted token object (for email extraction)
-
-# Try new format first: %APPDATA%\Claude\config.json
-if (Test-Path $configPath) {
+# ── Read config.json safely (Claude may have it open) ─────────────────────────
+function Read-FileShared($path) {
     try {
-        $cfg  = Get-Content $configPath -Raw | ConvertFrom-Json
-        $raw  = $cfg.'oauth:tokenCache'
-        if ($raw) {
-            $blob = $raw   # store the blob regardless of whether we can decrypt it
-            try {
-                $bytes     = [Convert]::FromBase64String($raw)
-                $encrypted = $bytes[3..($bytes.Length - 1)]   # strip v10 prefix
-                $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                    $encrypted, $null,
-                    [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                $tokenParsed = [System.Text.Encoding]::UTF8.GetString($decrypted) | ConvertFrom-Json
-            } catch {}
-        }
-    } catch {}
+        $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        $reader = New-Object System.IO.StreamReader($fs)
+        $text   = $reader.ReadToEnd()
+        $reader.Close(); $fs.Close()
+        return $text
+    } catch { return $null }
+}
+
+# ── Locate the token blob ─────────────────────────────────────────────────────
+$blob       = $null
+$legacyCred = $null
+
+if (Test-Path $configPath) {
+    $raw = Read-FileShared $configPath
+    if ($raw) {
+        try {
+            $blob = ($raw | ConvertFrom-Json).'oauth:tokenCache'
+        } catch {}
+    }
 }
 
 # Fall back to legacy ~/.claude/.credentials.json
 if (-not $blob -and (Test-Path $credPath)) {
     try {
         $cred = Get-Content $credPath -Raw | ConvertFrom-Json
-        if ($cred.claudeAiOauth) {
-            $legacyCred  = $cred.claudeAiOauth
-            $tokenParsed = $cred.claudeAiOauth
-        }
+        if ($cred.claudeAiOauth) { $legacyCred = $cred.claudeAiOauth }
     } catch {}
 }
 
@@ -59,33 +57,57 @@ if (-not $blob -and -not $legacyCred) {
 # ── Get the account email ─────────────────────────────────────────────────────
 $email = $null
 
-# 1. Direct field on token object
-if ($tokenParsed.email)                   { $email = $tokenParsed.email }
-if (-not $email -and $tokenParsed.claudeAiOauth.email) { $email = $tokenParsed.claudeAiOauth.email }
+# Method 1: AES-256-GCM decrypt via Node.js (new Electron safeStorage format)
+if ($blob -and (Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $localState)) {
+    try {
+        # DPAPI-decrypt the AES key stored in Local State
+        $lsJson     = Read-FileShared $localState
+        $encKeyB64  = ($lsJson | ConvertFrom-Json).os_crypt.encrypted_key
+        $encKeyBytes = [Convert]::FromBase64String($encKeyB64)
+        $keyBytes   = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encKeyBytes[5..($encKeyBytes.Length - 1)], $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $keyHex     = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
 
-# 2. ~/.claude/.claude.json
+        # Extract nonce + ciphertext from the v10 blob
+        $blobBytes  = [Convert]::FromBase64String($blob)
+        $nonceHex   = ($blobBytes[3..14]  | ForEach-Object { $_.ToString('x2') }) -join ''
+        $cipherHex  = ($blobBytes[15..($blobBytes.Length - 1)] | ForEach-Object { $_.ToString('x2') }) -join ''
+
+        # Node.js does the AES-256-GCM decryption
+        $nodeCode = @"
+const c=require('crypto');
+const ct=Buffer.from('$cipherHex','hex');
+const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));
+d.setAuthTag(ct.slice(-16));
+let r=d.update(ct.slice(0,-16),'','utf8')+d.final('utf8');
+const t=JSON.parse(r);
+console.log(t.email||t.claudeAiOauth&&t.claudeAiOauth.email||'');
+"@
+        $email = ($nodeCode | node --input-type=commonjs 2>$null).Trim()
+        if (-not $email) { $email = $null }
+    } catch {}
+}
+
+# Method 2: ~/.claude/.claude.json
 if (-not $email -and (Test-Path $cfgPath)) {
     try { $email = (Get-Content $cfgPath -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
 }
 
-# 3. Decode JWT access token
-if (-not $email) {
-    $at = $tokenParsed.accessToken
-    if (-not $at) { $at = $tokenParsed.claudeAiOauth.accessToken }
-    if ($at) {
-        try {
-            $parts = $at -split '\.'
-            $pad   = 4 - ($parts[1].Length % 4)
-            $b64   = if ($pad -ne 4) { $parts[1] + ('=' * $pad) } else { $parts[1] }
-            $email = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json).'https://api.anthropic.com/profile'.email
-        } catch {}
-    }
+# Method 3: legacy plaintext token
+if (-not $email -and $legacyCred) {
+    $email = $legacyCred.email
 }
 
-# If all auto-detection failed, ask the user
+# Method 4: ask the user
 if (-not $email) {
     Write-Host "Could not auto-detect the account email." -ForegroundColor Yellow
-    $email = Read-Host "Enter the email address for this Claude account"
+    try {
+        $email = Read-Host "Enter the email address for this account"
+    } catch {
+        Write-Host "Please pass your email as an argument: claude-add-account your@email.com" -ForegroundColor Yellow
+        Start-Sleep -Seconds 3; return
+    }
     if ([string]::IsNullOrWhiteSpace($email)) {
         Write-Host "No email provided - cancelled." -ForegroundColor Red
         Start-Sleep -Seconds 2; return
