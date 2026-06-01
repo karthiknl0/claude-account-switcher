@@ -84,6 +84,18 @@ foreach ($f in $SessionFolders) {
     $dst = Join-Path $sessionDest $f
     robocopy $src $dst /MIR /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
 }
+
+# Also capture config.json's oauth:tokenCache - the desktop app reads THIS for
+# the account identity/plan it displays, independent of the web cookies. Both
+# must be swapped together for the switch to take effect.
+$cfgFile = Join-Path $root 'config.json'
+if (Test-Path $cfgFile) {
+    try {
+        $tc = (Get-Content $cfgFile -Raw | ConvertFrom-Json).'oauth:tokenCache'
+        if ($tc) { Set-Content -Path (Join-Path $dest 'tokenCache.txt') -Value $tc -Encoding ASCII -NoNewline }
+    } catch {}
+}
+
 [ordered]@{ email = $email; savedAt = (Get-Date -Format o); sourceRoot = $root } |
     ConvertTo-Json | Set-Content -Path (Join-Path $dest 'meta.json') -Encoding UTF8
 

@@ -140,6 +140,27 @@ Get-ChildItem $store -Directory -Filter '.backup-*' -ErrorAction SilentlyContinu
 Write-Host "Loading session for $($chosen.Email)..." -ForegroundColor Cyan
 Copy-Session $chosenSess $root
 
+# Also restore the account's oauth:tokenCache into config.json (the identity the
+# app displays). Written WITHOUT a BOM - a BOM makes the app reset its settings.
+$tcFile = Join-Path $chosen.Dir 'tokenCache.txt'
+if (Test-Path $tcFile) {
+    $tc  = (Get-Content $tcFile -Raw).Trim()
+    $cfg = Join-Path $root 'config.json'
+    if ($tc -and (Test-Path $cfg)) {
+        try {
+            $raw = Get-Content $cfg -Raw
+            $kv  = '"oauth:tokenCache": "' + $tc + '"'
+            $m   = [Regex]::Match($raw, '"oauth:tokenCache"\s*:\s*"[^"]*"')
+            if ($m.Success) {
+                $raw = $raw.Substring(0, $m.Index) + $kv + $raw.Substring($m.Index + $m.Length)
+            } else {
+                $raw = [Regex]::Replace($raw, '\}\s*$', (', ' + $kv + "`n}"))
+            }
+            [System.IO.File]::WriteAllText($cfg, $raw, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+    }
+}
+
 Write-Host "Reopening Claude..." -ForegroundColor Cyan
 if (Start-Claude) {
     Write-Host ""
