@@ -1,25 +1,60 @@
-﻿# Switch the Claude Code (CLI) account by swapping ~/.claude/.credentials.json.
-# Simple, safe flat-file swap (like Codex). The conversation transcripts in
+﻿# Switch the Claude Code (CLI) account by swapping its stored OAuth credentials.
+# Simple, safe credential swap (like Codex). The conversation transcripts in
 # ~/.claude/projects are shared across accounts, so after switching you can
 # `claude --resume` to continue the same work under the new account.
 #
-# Run from a NORMAL PowerShell window. Close any open Claude Code session first
-# so it re-reads the new credentials.
+# Cross-platform (Windows / Linux / macOS) - on Unix run with PowerShell (pwsh).
+# Windows + Linux store the login in the flat file ~/.claude/.credentials.json;
+# macOS keeps it in the login Keychain ("Claude Code-credentials"), so this
+# script reads/writes it there via the `security` CLI.
+#
+# Close any open Claude Code session first so it re-reads the new credentials.
 
-$store   = Join-Path $env:USERPROFILE '.claude-cc-accounts'
-$cred    = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+# -- Platform detection ($IsMacOS etc. only exist on PowerShell Core/7+) -------
+$PlatformMac = $false; $PlatformWin = $true
+if (Test-Path variable:IsMacOS)   { $PlatformMac = $IsMacOS }
+if (Test-Path variable:IsWindows) { $PlatformWin = $IsWindows }
+
+$store   = Join-Path $HOME '.claude-cc-accounts'
+$cred    = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
+$KeychainService = 'Claude Code-credentials'
 $RawBase = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
+
+# -- Platform-aware live-credential access -------------------------------------
+# Returns the raw credentials JSON string for the account currently logged in.
+function Get-LiveCredsRaw {
+    if ($PlatformMac) {
+        try {
+            $out = & security find-generic-password -s $KeychainService -w 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out) { return ($out -join "`n") }
+        } catch {}
+        return $null
+    }
+    if (Test-Path $cred) { try { return (Get-Content $cred -Raw) } catch {} }
+    return $null
+}
+
+# Writes the raw credentials JSON for the account being switched to.
+function Set-LiveCredsRaw($json) {
+    if ($PlatformMac) {
+        $acct = $env:USER; if (-not $acct) { try { $acct = (& id -un) } catch {} }
+        & security add-generic-password -U -s $KeychainService -a $acct -w $json 2>$null | Out-Null
+        return
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path $cred) | Out-Null
+    [System.IO.File]::WriteAllText($cred, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 function Test-ForUpdate {
     try {
-        $checkFile = Join-Path $env:USERPROFILE '.claude-tools\.update-check'
+        $checkFile = Join-Path (Join-Path $HOME '.claude-tools') '.update-check'
         if (Test-Path $checkFile) {
             if (((Get-Date) - (Get-Item $checkFile).LastWriteTime) -lt [TimeSpan]::FromDays(1)) { return }
         }
         New-Item -ItemType File -Force -Path $checkFile | Out-Null
         (Get-Date -Format o) | Set-Content -Path $checkFile -ErrorAction SilentlyContinue
         $remote  = (Invoke-RestMethod -Uri "$RawBase/VERSION" -TimeoutSec 4).ToString().Trim()
-        $verFile = Join-Path $env:USERPROFILE '.claude-tools\.version'
+        $verFile = Join-Path (Join-Path $HOME '.claude-tools') '.version'
         $local   = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { '0.0.0' }
         if ([version]$remote -gt [version]$local) {
             Write-Host ""
@@ -69,8 +104,9 @@ if (-not $accounts) {
 
 # Current account = live credentials' access token matches a saved one.
 $liveToken = $null
-if (Test-Path $cred) {
-    try { $liveToken = (Get-Content $cred -Raw | ConvertFrom-Json).claudeAiOauth.accessToken } catch {}
+$liveRaw   = Get-LiveCredsRaw
+if ($liveRaw) {
+    try { $liveToken = ($liveRaw | ConvertFrom-Json).claudeAiOauth.accessToken } catch {}
 }
 
 $list = @()
@@ -113,18 +149,21 @@ if ($chosen.Token -and $chosen.Token -eq $liveToken) {
     Start-Sleep -Seconds 2; return
 }
 
-# Back up current creds (in a hidden subfolder so they never show in the picker).
-New-Item -ItemType Directory -Force -Path (Split-Path $cred) | Out-Null
+# Back up the current live creds (in a hidden subfolder so they never show in
+# the picker). Works on every platform - we snapshot the raw JSON, wherever it
+# came from (file on Windows/Linux, Keychain on macOS).
 $backupDir = Join-Path $store '.backups'
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-if (Test-Path $cred) {
-    Copy-Item $cred (Join-Path $backupDir ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
+if ($liveRaw) {
+    [System.IO.File]::WriteAllText(
+        (Join-Path $backupDir ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+        $liveRaw, (New-Object System.Text.UTF8Encoding($false)))
 }
 Get-ChildItem $backupDir -Filter 'backup-*.credentials.json' -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -Skip 1 | Remove-Item -Force -ErrorAction SilentlyContinue
 
 $json = $chosen.Creds | ConvertTo-Json -Depth 20
-[System.IO.File]::WriteAllText($cred, $json, (New-Object System.Text.UTF8Encoding($false)))
+Set-LiveCredsRaw $json
 
 Write-Host ""
 Write-Host "Switched Claude Code to $($chosen.Email)." -ForegroundColor Green

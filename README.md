@@ -1,32 +1,53 @@
 # Claude Account Switcher
 
 Switch between multiple **Anthropic Claude** accounts (e.g. several Pro/Max
-accounts you own) on Windows. One install gives you **two switchers**:
+accounts you own). One install gives you **two switchers**:
 
-- **Desktop app** — flip the **Claude desktop app** (claude.ai chats) between
-  accounts, with a Desktop shortcut and a usage readout.
-- **Claude Code CLI** — flip **Claude Code** (`claude`) between accounts; since
-  your project transcripts are shared across accounts, you can hit a limit,
-  switch, and `claude --resume` to continue the *same work* on another account.
+- **Desktop app** *(Windows only)* — flip the **Claude desktop app** (claude.ai
+  chats) between accounts, with a Desktop shortcut and a usage readout.
+- **Claude Code CLI** *(Windows · macOS · Linux)* — flip **Claude Code**
+  (`claude`) between accounts; since your project transcripts are shared across
+  accounts, you can hit a limit, switch, and `claude --resume` to continue the
+  *same work* on another account. Shows 5h/7d usage **and reset times**.
 
 Neither app has a built-in account switcher — this adds both. **No npm required.**
+
+| Switcher | Windows | macOS | Linux |
+|---|:---:|:---:|:---:|
+| Claude Code CLI | ✅ | ✅ | ✅ |
+| Desktop app | ✅ | — | — |
 
 ---
 
 ## Quick start
 
-```powershell
-# 1. Install (run once, in PowerShell)
-irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/install.ps1 | iex
+**Windows** (PowerShell):
 
+```powershell
+# 1. Install (run once)
+irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/install.ps1 | iex
 # 2. Open a NEW PowerShell window, then save each account (see "Add your accounts")
 claude-add-account
-
 # 3. Switch any time
 claude-switch-account
 ```
 
-> **Requires:** Windows and the [Claude desktop app](https://claude.ai/download).
+**macOS / Linux** (Claude Code CLI only — requires [PowerShell](https://aka.ms/powershell)):
+
+```bash
+# 1. Install (run once)
+pwsh -c "irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/install.ps1 | iex"
+# 2. Reload your shell (or open a new terminal), then save each account
+source ~/.zshrc   # or ~/.bashrc on Linux
+claude-code-add
+# 3. Switch any time
+claude-code-switch
+```
+
+> **Requires:** Windows for the desktop-app switcher. The Claude Code CLI
+> switcher also runs on macOS/Linux with [PowerShell](https://aka.ms/powershell)
+> installed. On macOS the Claude Code login lives in the **Keychain**, so the
+> first read/write may prompt you to *Allow* access.
 
 ---
 

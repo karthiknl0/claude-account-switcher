@@ -1,22 +1,52 @@
-﻿# Save the Claude Code (CLI) account currently logged in, so it can be switched
-# to later. Claude Code stores its login in ~/.claude/.credentials.json - a flat
-# OAuth token file - so this is a simple, safe snapshot (like Codex's auth.json).
+# Save the Claude Code (CLI) account currently logged in, so it can be switched
+# to later. Claude Code stores its login as a flat OAuth token (like Codex's
+# auth.json), so this is a simple, safe snapshot.
 #
-# Run from a NORMAL PowerShell window.
+# Cross-platform (Windows / Linux / macOS) - on Unix run with PowerShell (pwsh).
+# Windows + Linux read it from ~/.claude/.credentials.json; macOS reads it from
+# the login Keychain ("Claude Code-credentials") via the `security` CLI.
 
-$store = Join-Path $env:USERPROFILE '.claude-cc-accounts'
-$cred  = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+# -- Platform detection ($IsMacOS etc. only exist on PowerShell Core/7+) -------
+$PlatformMac = $false
+if (Test-Path variable:IsMacOS) { $PlatformMac = $IsMacOS }
+
+$store = Join-Path $HOME '.claude-cc-accounts'
+$cred  = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
+$KeychainService = 'Claude Code-credentials'
+$credLabel = if ($PlatformMac) { 'the login Keychain' } else { '~/.claude/.credentials.json' }
+
+# -- Platform-aware live-credential access -------------------------------------
+function Get-LiveCredsRaw {
+    if ($PlatformMac) {
+        try {
+            $out = & security find-generic-password -s $KeychainService -w 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out) { return ($out -join "`n") }
+        } catch {}
+        return $null
+    }
+    if (Test-Path $cred) { try { return (Get-Content $cred -Raw) } catch {} }
+    return $null
+}
+
+function Remove-LiveCreds {
+    if ($PlatformMac) {
+        & security delete-generic-password -s $KeychainService 2>$null | Out-Null
+        return
+    }
+    Remove-Item $cred -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 Write-Host "=== Add Claude Code account ===" -ForegroundColor Cyan
 
-if (-not (Test-Path $cred)) {
-    Write-Host "Claude Code is not logged in (no ~/.claude/.credentials.json)." -ForegroundColor Red
+$raw = Get-LiveCredsRaw
+if (-not $raw) {
+    Write-Host "Claude Code is not logged in (no credentials in $credLabel)." -ForegroundColor Red
     Write-Host "Open Claude Code, run /login, then re-run this." -ForegroundColor Red
     Start-Sleep -Seconds 3; return
 }
-try { $c = Get-Content $cred -Raw | ConvertFrom-Json } catch {
-    Write-Host "Could not read ~/.claude/.credentials.json." -ForegroundColor Red
+try { $c = $raw | ConvertFrom-Json } catch {
+    Write-Host "Could not read the Claude Code credentials." -ForegroundColor Red
     Start-Sleep -Seconds 2; return
 }
 if (-not $c.claudeAiOauth) {
@@ -38,11 +68,11 @@ Write-Host ""
 Write-Host "Saved Claude Code account: $email" -ForegroundColor Green
 Write-Host ""
 
-# Offer to set up the NEXT account. Clearing the LOCAL credentials (deleting the
-# file) does NOT call the logout API, so the account we just saved stays valid.
+# Offer to set up the NEXT account. Clearing the LOCAL credentials does NOT call
+# the logout API, so the account we just saved stays valid.
 $more = Read-Host "Add ANOTHER account now? (clears local login WITHOUT logging out) [y/N]"
 if ($more -match '^(y|yes)$') {
-    Remove-Item $cred -Force -ErrorAction SilentlyContinue
+    Remove-LiveCreds
     Write-Host ""
     Write-Host "Local Claude Code login cleared (not revoked)." -ForegroundColor Green
     Write-Host "In Claude Code: run /login as the NEXT account, then run 'claude-code-add' again." -ForegroundColor Green
