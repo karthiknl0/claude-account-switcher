@@ -31,12 +31,17 @@ This installs:
 
 ## Add your accounts
 
-For each account: log into it in the Claude app (account menu → **Log out**, then
-sign in as that account), then save it:
+For each account:
 
-```powershell
-claude-add-account
-```
+1. Log into it in the Claude desktop app (account menu → **Log out**, then sign
+   in as that account).
+2. Save its session (this **closes** Claude, copies the session, then reopens it):
+
+   ```powershell
+   claude-add-account
+   ```
+
+   Enter that account's email when prompted.
 
 Repeat for as many accounts as you want.
 
@@ -47,37 +52,32 @@ Repeat for as many accounts as you want.
 - Double-click **"Claude Switch Account"** on your Desktop, or
 - run **`claude-switch-account`** in a **standalone** PowerShell window.
 
-Pick an account → the Claude desktop app closes and reopens logged into it.
-
-The picker also shows each account's **usage** (5-hour and 7-day % used, queried
-from Anthropic's OAuth usage endpoint) so you can see which account has headroom
-before switching. Tokens expire ~hourly; an account whose cached token has
-expired shows `usage n/a` until you next switch to it.
+Pick an account → Claude **fully closes**, the saved session is swapped in, and
+the app reopens logged into the chosen account.
 
 > ⚠️ **Run it from a standalone PowerShell window**, not from inside a Claude
-> session — switching closes the Claude desktop app to reload the login. The
-> displayed email can take a few seconds to refresh after a switch; usage always
-> counts against the swapped account.
+> session — switching force-closes the Claude desktop app to swap its session.
 
 ---
 
 ## How it works
 
-Claude stores its login token in `~/.claude/.credentials.json`, which the desktop
-app reads at startup. The switcher keeps a copy of each account's token and swaps
-the active one, then restarts the app (it auto-detects the Claude Store app, so
-it survives updates).
+The Claude desktop app is an Electron app — your login is a **browser session**
+(cookies + Local Storage + IndexedDB), just like being signed into claude.ai in a
+browser. There is no single token file to swap, so the switcher works at the
+session level:
 
-It is deliberately **minimal and safe**:
+- `claude-add-account` closes Claude and snapshots the live session
+  (`Network`, `Local Storage`, `IndexedDB`, `Session Storage`) into
+  `~/.claude-accounts/<email>/session/`.
+- `claude-switch-account` closes Claude, **backs up** the current session to
+  `~/.claude-accounts/.backup-<timestamp>/` (keeps the last 3), copies in the
+  chosen account's session, and restarts the app.
 
-- swaps **only** the `claudeAiOauth` token block (your `mcpOAuth` is preserved);
-- **never edits** `~/.claude/.claude.json`, so your settings, MCP servers and
-  history are untouched;
-- backs up the previous credentials to `~/.claude-accounts/backup-<timestamp>.credentials.json`
-  before every switch.
+It auto-detects the Store/MSIX app location, so it survives Claude updates.
 
 There is no live in-app switch — the menu is the "dropdown", and the app reflects
-whichever account is active after the restart.
+whichever account's session is active after the restart.
 
 ---
 
@@ -100,9 +100,15 @@ Remove-Item -Recurse -Force ~/.claude-accounts
 
 - **Use only accounts you own.** This is for moving between your own accounts,
   not sharing accounts or evading limits.
-- Saved tokens are stored in plaintext locally (same as how the app already
-  stores `~/.claude/.credentials.json`). Keep your machine secured; never commit
-  `~/.claude-accounts` anywhere.
+- **Switching closes Claude.** The app must fully quit so its session files
+  unlock; the switcher waits for that, then reopens it. Don't run it from inside
+  a Claude session you care about.
+- **Saved sessions are machine-bound.** Cookies are encrypted with a Windows
+  (DPAPI) key tied to your user account, so a snapshot only works on the same
+  Windows user/machine it was taken on. Don't copy `~/.claude-accounts` to
+  another PC, and never commit it anywhere — it contains live login sessions.
+- If a switch ever leaves Claude in a weird state, your previous session is in
+  `~/.claude-accounts/.backup-<timestamp>/`.
 
 ## License
 

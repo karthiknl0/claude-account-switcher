@@ -1,159 +1,94 @@
-﻿# Snapshot the Claude account currently logged in and save it to ~/.claude-accounts
-# so it can be switched to later. Works with both storage formats:
-#   - New (Electron safeStorage): %APPDATA%\Claude\config.json -> oauth:tokenCache
-#   - Legacy (.credentials.json): ~/.claude/.credentials.json  -> claudeAiOauth
+﻿# Snapshot the Claude desktop account that is CURRENTLY logged in, so it can be
+# switched to later. The Claude desktop app is an Electron web app: its login
+# lives in the browser session (cookies + Local Storage + IndexedDB), not in a
+# single token file. So we copy those session folders wholesale.
+#
+# Run from a NORMAL PowerShell window. THIS CLOSES THE CLAUDE APP.
 
-Add-Type -AssemblyName System.Security
-
-$credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$cfgPath  = Join-Path $env:USERPROFILE '.claude\.claude.json'
-$store    = Join-Path $env:USERPROFILE '.claude-accounts'
+$store          = Join-Path $env:USERPROFILE '.claude-accounts'
+$SessionFolders = @('Network', 'Local Storage', 'IndexedDB', 'Session Storage')
 
 Write-Host ""
-Write-Host "=== Add Claude account ===" -ForegroundColor Cyan
-Write-Host "Make sure the Claude desktop app is open and you are logged in." -ForegroundColor DarkGray
+Write-Host "=== Add Claude account (session snapshot) ===" -ForegroundColor Cyan
+Write-Host "1. Log into the account you want to save in the Claude desktop app." -ForegroundColor DarkGray
+Write-Host "2. Then run this - it CLOSES Claude to copy its session, then reopens it." -ForegroundColor DarkGray
 Write-Host ""
 
-# -- Read a file even if Claude has it open ------------------------------------
-function Read-FileShared($path) {
-    try {
-        $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
-        $reader = New-Object System.IO.StreamReader($fs)
-        $text   = $reader.ReadToEnd()
-        $reader.Close(); $fs.Close()
-        return $text
-    } catch { return $null }
-}
-
-# -- Resolve Claude's data files across normal + MSIX (Store) installs ---------
-# The Store/MSIX app stores config under its package LocalCache, while the
-# plain install uses %APPDATA%\Claude. We probe all known locations and use
-# whichever actually exists (newest wins).
-function Get-ClaudeFiles($leaf) {
-    $candidates = @(
-        (Join-Path $env:APPDATA "Claude\$leaf")
-    )
+# -- Resolve the live session root (handles MSIX/Store + plain installs) --------
+function Get-SessionRoot {
+    $roots = @( Join-Path $env:APPDATA 'Claude' )
     $pkgRoot = Join-Path $env:LOCALAPPDATA 'Packages'
     if (Test-Path $pkgRoot) {
         Get-ChildItem $pkgRoot -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
-            $candidates += (Join-Path $_.FullName "LocalCache\Roaming\Claude\$leaf")
+            $roots += (Join-Path $_.FullName 'LocalCache\Roaming\Claude')
         }
     }
-    $candidates | Where-Object { Test-Path $_ } |
-        Get-Item -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -ExpandProperty FullName -Unique
-}
-
-$configPaths = @(Get-ClaudeFiles 'config.json')
-$configPath  = $configPaths | Select-Object -First 1
-$localState  = Get-ClaudeFiles 'Local State' | Select-Object -First 1
-
-# -- Locate the token blob -----------------------------------------------------
-$blob       = $null
-$legacyCred = $null
-
-if ($configPath) {
-    $raw = Read-FileShared $configPath
-    if ($raw) {
-        try {
-            $blob = ($raw | ConvertFrom-Json).'oauth:tokenCache'
-        } catch {}
+    $roots = $roots | Where-Object { Test-Path $_ } | Select-Object -Unique
+    $live = $null; $newest = $null; $newestTime = [datetime]::MinValue
+    foreach ($r in $roots) {
+        $ck = Join-Path $r 'Network\Cookies'
+        if (Test-Path $ck) {
+            try { $fs = [IO.File]::Open($ck,'Open','Read','None'); $fs.Close() } catch { $live = $r }
+            $t = (Get-Item $ck).LastWriteTime
+            if ($t -gt $newestTime) { $newestTime = $t; $newest = $r }
+        }
     }
+    if ($live)   { return $live }
+    if ($newest) { return $newest }
+    return ($roots | Select-Object -First 1)
 }
 
-# Fall back to legacy ~/.claude/.credentials.json
-if (-not $blob -and (Test-Path $credPath)) {
-    try {
-        $cred = Get-Content $credPath -Raw | ConvertFrom-Json
-        if ($cred.claudeAiOauth) { $legacyCred = $cred.claudeAiOauth }
-    } catch {}
-}
-
-if (-not $blob -and -not $legacyCred) {
-    Write-Host "No Claude login found." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Diagnostics:" -ForegroundColor DarkGray
-    Write-Host "  config.json located: $(if ($configPath) { $configPath } else { '(none found)' })" -ForegroundColor DarkGray
-    Write-Host "  paths probed       : $($configPaths.Count)" -ForegroundColor DarkGray
-    Write-Host "  running as admin   : $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "Open the Claude desktop app, log in, then re-run this" -ForegroundColor Red
-    Write-Host "in a NORMAL (non-Administrator) PowerShell window." -ForegroundColor Red
-    Start-Sleep -Seconds 4; return
-}
-
-# -- Get the account email -----------------------------------------------------
-$email = $null
-
-# Method 1: AES-256-GCM decrypt via Node.js (new Electron safeStorage format)
-if ($blob -and (Get-Command node -ErrorAction SilentlyContinue) -and $localState -and (Test-Path $localState)) {
-    try {
-        # DPAPI-decrypt the AES key stored in Local State
-        $lsJson     = Read-FileShared $localState
-        $encKeyB64  = ($lsJson | ConvertFrom-Json).os_crypt.encrypted_key
-        $encKeyBytes = [Convert]::FromBase64String($encKeyB64)
-        $keyBytes   = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $encKeyBytes[5..($encKeyBytes.Length - 1)], $null,
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        $keyHex     = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
-
-        # Extract nonce + ciphertext from the v10 blob
-        $blobBytes  = [Convert]::FromBase64String($blob)
-        $nonceHex   = ($blobBytes[3..14]  | ForEach-Object { $_.ToString('x2') }) -join ''
-        $cipherHex  = ($blobBytes[15..($blobBytes.Length - 1)] | ForEach-Object { $_.ToString('x2') }) -join ''
-
-        # Node.js does the AES-256-GCM decryption
-        $nodeCode = @"
-const c=require('crypto');
-const ct=Buffer.from('$cipherHex','hex');
-const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));
-d.setAuthTag(ct.slice(-16));
-let r=d.update(ct.slice(0,-16),'','utf8')+d.final('utf8');
-const t=JSON.parse(r);
-console.log(t.email||t.claudeAiOauth&&t.claudeAiOauth.email||'');
-"@
-        $email = ($nodeCode | node --input-type=commonjs 2>$null).Trim()
-        if (-not $email) { $email = $null }
-    } catch {}
-}
-
-# Method 2: ~/.claude/.claude.json
-if (-not $email -and (Test-Path $cfgPath)) {
-    try { $email = (Get-Content $cfgPath -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
-}
-
-# Method 3: legacy plaintext token
-if (-not $email -and $legacyCred) {
-    $email = $legacyCred.email
-}
-
-# Method 4: ask the user
-if (-not $email) {
-    Write-Host "Could not auto-detect the account email." -ForegroundColor Yellow
-    try {
-        $email = Read-Host "Enter the email address for this account"
-    } catch {
-        Write-Host "Please pass your email as an argument: claude-add-account your@email.com" -ForegroundColor Yellow
-        Start-Sleep -Seconds 3; return
+function Stop-Claude($root) {
+    Get-Process -Name 'Claude' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -like '*WindowsApps\Claude_*' -or $_.Path -like '*\Claude\Claude.exe' } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    $ck = Join-Path $root 'Network\Cookies'
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Test-Path $ck)) { return $true }
+        try { $fs = [IO.File]::Open($ck,'Open','Read','None'); $fs.Close(); return $true } catch { Start-Sleep -Milliseconds 500 }
     }
-    if ([string]::IsNullOrWhiteSpace($email)) {
-        Write-Host "No email provided - cancelled." -ForegroundColor Red
-        Start-Sleep -Seconds 2; return
-    }
+    return $false
 }
 
-# -- Save snapshot -------------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $store | Out-Null
-$safe = ($email -replace '[^\w.@+-]', '_')
-$file = Join-Path $store "$safe.json"
+function Start-Claude {
+    $a = Get-StartApps | Where-Object { $_.Name -match 'claude' } | Select-Object -First 1
+    if ($a) { Start-Process "shell:AppsFolder\$($a.AppID)" }
+}
 
-$entry = [ordered]@{ email = $email }
-if ($blob)       { $entry.tokenCache    = $blob }
-else             { $entry.claudeAiOauth = $legacyCred }
+$root = Get-SessionRoot
+if (-not $root) {
+    Write-Host "Claude app data not found. Open Claude, log in, then retry." -ForegroundColor Red
+    Start-Sleep -Seconds 3; return
+}
 
-$entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+$email = Read-Host "Email of the account currently logged into Claude"
+if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
 
-Write-Host "Saved: $email" -ForegroundColor Green
-Write-Host "File:  $file"  -ForegroundColor DarkGray
+Write-Host "Closing Claude..." -ForegroundColor Cyan
+if (-not (Stop-Claude $root)) {
+    Write-Host "Could not fully close Claude (session still locked)." -ForegroundColor Red
+    Write-Host "Close every Claude window manually, then retry." -ForegroundColor Red
+    Start-Sleep -Seconds 3; return
+}
+
+$safe        = ($email -replace '[^\w.@+-]', '_')
+$dest        = Join-Path $store $safe
+$sessionDest = Join-Path $dest 'session'
+New-Item -ItemType Directory -Force -Path $sessionDest | Out-Null
+
+Write-Host "Saving session for $email ..." -ForegroundColor Cyan
+foreach ($f in $SessionFolders) {
+    $src = Join-Path $root $f
+    if (-not (Test-Path $src)) { continue }
+    $dst = Join-Path $sessionDest $f
+    robocopy $src $dst /MIR /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
+}
+[ordered]@{ email = $email; savedAt = (Get-Date -Format o); sourceRoot = $root } |
+    ConvertTo-Json | Set-Content -Path (Join-Path $dest 'meta.json') -Encoding UTF8
+
+Write-Host ""
+Write-Host "Saved account: $email" -ForegroundColor Green
+Write-Host "Reopening Claude..." -ForegroundColor DarkGray
+Start-Claude
 Start-Sleep -Seconds 2
