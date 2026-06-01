@@ -97,7 +97,7 @@ if (Test-Path $cred) {
     Copy-Item $cred (Join-Path $backupDir ("backup-{0}.credentials.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
 }
 Get-ChildItem $backupDir -Filter 'backup-*.credentials.json' -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue
+    Sort-Object Name -Descending | Select-Object -Skip 1 | Remove-Item -Force -ErrorAction SilentlyContinue
 
 $json = $chosen.Creds | ConvertTo-Json -Depth 20
 [System.IO.File]::WriteAllText($cred, $json, (New-Object System.Text.UTF8Encoding($false)))

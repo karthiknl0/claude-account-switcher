@@ -203,9 +203,9 @@ $backup = Join-Path $store ('.backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 Write-Host "Backing up current session..." -ForegroundColor DarkGray
 Copy-Session $root $backup
 
-# Prune old backups (keep the 3 most recent).
+# Keep only the most recent backup (delete previous ones) - sessions are large.
 Get-ChildItem $store -Directory -Filter '.backup-*' -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -Skip 3 |
+    Sort-Object Name -Descending | Select-Object -Skip 1 |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Loading session for $($chosen.Email)..." -ForegroundColor Cyan
