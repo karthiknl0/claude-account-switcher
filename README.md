@@ -49,6 +49,11 @@ Repeat for as many accounts as you want.
 
 Pick an account → the Claude desktop app closes and reopens logged into it.
 
+The picker also shows each account's **usage** (5-hour and 7-day % used, queried
+from Anthropic's OAuth usage endpoint) so you can see which account has headroom
+before switching. Tokens expire ~hourly; an account whose cached token has
+expired shows `usage n/a` until you next switch to it.
+
 > ⚠️ **Run it from a standalone PowerShell window**, not from inside a Claude
 > session — switching closes the Claude desktop app to reload the login. The
 > displayed email can take a few seconds to refresh after a switch; usage always
