@@ -189,15 +189,19 @@ if ($chosen.Entry.tokenCache) {
         Write-Host "Claude config.json not found in any known location." -ForegroundColor Red
         Start-Sleep -Seconds 2; return
     }
+    $newKv = '"oauth:tokenCache": "' + $chosen.Entry.tokenCache + '"'
     foreach ($cp in $configPaths) {
         $raw = Read-FileShared $cp
         if (-not $raw) { continue }
-        if ($raw -match '"oauth:tokenCache"') {
-            $raw = $raw -replace '"oauth:tokenCache"\s*:\s*"[^"]*"', """oauth:tokenCache"": ""$($chosen.Entry.tokenCache)"""
+        # Literal substring replace (no regex replacement-string escaping issues).
+        $m = [Regex]::Match($raw, '"oauth:tokenCache"\s*:\s*"[^"]*"')
+        if ($m.Success) {
+            $raw = $raw.Substring(0, $m.Index) + $newKv + $raw.Substring($m.Index + $m.Length)
         } else {
-            $raw = $raw -replace '}\s*$', (", `"oauth:tokenCache`": `"$($chosen.Entry.tokenCache)`"`n}")
+            $raw = [Regex]::Replace($raw, '\}\s*$', (', ' + $newKv + "`n}"))
         }
-        try { Set-Content -Path $cp -Value $raw -Encoding UTF8 } catch {}
+        # Write WITHOUT a BOM - the app treats a BOM as corruption and resets settings.
+        try { [System.IO.File]::WriteAllText($cp, $raw, (New-Object System.Text.UTF8Encoding($false))) } catch {}
     }
 } else {
     # Legacy format: swap claudeAiOauth in .credentials.json
