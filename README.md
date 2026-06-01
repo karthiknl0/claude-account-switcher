@@ -1,16 +1,34 @@
 # Claude Account Switcher
 
 Switch between multiple **Anthropic Claude** accounts (e.g. several Pro/Max
-accounts you own) on Windows — pick an account from a quick menu and the
-**Claude desktop app** restarts logged into it.
+accounts you own) on Windows — pick one from a quick menu and the **Claude
+desktop app** restarts logged into it.
 
-The Claude desktop app has no built-in account dropdown. This swaps the active
-login token and restarts the app, plus a Desktop shortcut so it's a double-click.
-**No npm required.**
+The Claude desktop app has no built-in account switcher. This saves each
+account's login and swaps it on demand, with a Desktop shortcut for one-click
+switching and a usage readout so you can see which account has headroom.
+**No npm required** (Node.js only enables the optional usage display).
 
 ---
 
-## Install (one line)
+## Quick start
+
+```powershell
+# 1. Install (run once, in PowerShell)
+irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/install.ps1 | iex
+
+# 2. Open a NEW PowerShell window, then save each account (see "Add your accounts")
+claude-add-account
+
+# 3. Switch any time
+claude-switch-account
+```
+
+> **Requires:** Windows and the [Claude desktop app](https://claude.ai/download).
+
+---
+
+## Step 1 — Install
 
 Open **PowerShell** and run:
 
@@ -20,47 +38,73 @@ irm https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main/in
 
 This installs:
 
-- `~/.claude-tools/claude-switch.ps1`, `claude-add.ps1`
-- `claude-switch-account` / `claude-add-account` commands in your PowerShell profiles
+- `~/.claude-tools/claude-switch.ps1` and `claude-add.ps1`
+- `claude-switch-account`, `claude-add-account`, `claude-switch-update` commands
+  in your PowerShell profiles
 - a **"Claude Switch Account"** shortcut on your Desktop
 
-> **Requires:** Windows and the [Claude desktop app](https://claude.ai/download).
-> Open a new PowerShell window after installing so the commands load.
+**Then open a new PowerShell window** so the commands load.
 
 ---
 
-## Add your accounts
+## Step 2 — Add your accounts
 
-> **Don't use the app's "Log out" to switch between accounts while adding them.**
-> Logging out revokes that account's session on Anthropic's servers, which kills
-> the snapshot. `claude-add-account` handles this for you: it clears the *local*
-> login (without logging out) so each saved account stays valid.
+> ⚠️ **Do NOT use the Claude app's "Log out" while adding accounts.** Logging out
+> revokes that account's session on Anthropic's servers, which kills the saved
+> snapshot. `claude-add-account` clears the *local* login for you instead — so
+> every saved account stays valid.
 
-1. Log into your **first** account in the Claude desktop app.
-2. Save it (this closes Claude, copies the session + token, reopens it):
+1. **Log into your first account** in the Claude desktop app.
+2. Run:
 
    ```powershell
    claude-add-account
    ```
 
-   Enter that account's email when prompted.
-3. When it asks **"Add ANOTHER account now?"**, answer **y** — Claude reopens at a
-   fresh sign-in screen *without* logging the first account out.
-4. Sign in as your **next** account, run `claude-add-account` again, and repeat
-   for as many accounts as you want. Answer **n** on the last one.
+   - Enter that account's **email** when asked.
+   - Claude briefly closes (to copy its session) and reopens.
+3. When it asks **"Add ANOTHER account now?"** → type **`y`**. Claude reopens at a
+   **fresh sign-in screen** (your first account is *not* logged out).
+4. **Sign in as your next account**, run `claude-add-account` again, enter its
+   email. Repeat for as many accounts as you like.
+5. On the **last** account, answer **`n`** to "Add ANOTHER account?".
 
 ---
 
-## Switching accounts
+## Step 3 — Switch accounts
 
-- Double-click **"Claude Switch Account"** on your Desktop, or
-- run **`claude-switch-account`** in a **standalone** PowerShell window.
+- **Double-click** the **"Claude Switch Account"** icon on your Desktop, **or**
+- run **`claude-switch-account`** in a standalone PowerShell window.
 
-Pick an account → Claude **fully closes**, the saved session is swapped in, and
-the app reopens logged into the chosen account.
+You'll see a menu like:
 
-> ⚠️ **Run it from a standalone PowerShell window**, not from inside a Claude
-> session — switching force-closes the Claude desktop app to swap its session.
+```
+=== Switch Claude account ===
+  [1] * you@example.com           5h  12% / 7d   8% used
+  [2]   work@example.com          5h  47% / 7d  31% used
+  (* = current   |   lower % = more headroom)
+```
+
+Type the **number** and press Enter. Claude closes and reopens logged into that
+account.
+
+> ⚠️ Run it from a **standalone** PowerShell window (or the Desktop shortcut),
+> **not** from inside a Claude session — switching force-closes the desktop app.
+>
+> The **usage readout** (5-hour / 7-day % used) needs [Node.js](https://nodejs.org)
+> installed; without it the menu just lists emails. An account whose saved token
+> has expired shows `usage n/a` until you next switch to it.
+
+---
+
+## Updating
+
+```powershell
+claude-switch-update
+```
+
+Pulls the latest version. (You can also just re-run the install one-line.) When a
+newer version is available, `claude-switch-account` shows a one-line notice.
 
 ---
 

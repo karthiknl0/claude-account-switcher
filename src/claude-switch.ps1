@@ -81,6 +81,57 @@ function Copy-Session($srcRoot, $dstRoot) {
     }
 }
 
+# -- Usage display (best-effort; needs Node for AES-GCM decrypt) ----------------
+function Read-FileShared($path) {
+    try {
+        $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        $reader = New-Object System.IO.StreamReader($fs)
+        $text   = $reader.ReadToEnd()
+        $reader.Close(); $fs.Close()
+        return $text
+    } catch { return $null }
+}
+
+function Get-AesKeyHex($root) {
+    try {
+        $ls = Read-FileShared (Join-Path $root 'Local State')
+        if (-not $ls) { return $null }
+        $b64   = ($ls | ConvertFrom-Json).os_crypt.encrypted_key
+        $bytes = [Convert]::FromBase64String($b64)
+        $key   = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                     $bytes[5..($bytes.Length - 1)], $null,
+                     [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return ($key | ForEach-Object { $_.ToString('x2') }) -join ''
+    } catch { return $null }
+}
+
+function Get-TokenFromBlob($blob, $keyHex) {
+    if (-not $blob -or -not $keyHex) { return $null }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
+    $tmp = Join-Path $env:TEMP ("ccsw_" + [guid]::NewGuid().ToString('N') + ".js")
+    try {
+        $bytes     = [Convert]::FromBase64String($blob)
+        $nonceHex  = ($bytes[3..14]               | ForEach-Object { $_.ToString('x2') }) -join ''
+        $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
+        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];process.stdout.write((v&&v.token)||'');"
+        Set-Content -Path $tmp -Value $code -Encoding ASCII
+        # Run via cmd so stderr is suppressed by cmd (avoids PowerShell's native-stderr quirk).
+        $tok = cmd /c "node ""$tmp"" 2>nul"
+        if ($tok) { return ([string]$tok).Trim() }
+    } catch {} finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
+    return $null
+}
+
+function Get-ClaudeUsage($accessToken) {
+    if (-not $accessToken) { return $null }
+    try {
+        $h = @{ 'Authorization' = "Bearer $accessToken"; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'oauth-2025-04-20' }
+        return Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $h -TimeoutSec 6
+    } catch { return $null }
+}
+
 # -- Load saved accounts -------------------------------------------------------
 $accounts = Get-ChildItem $store -Directory -ErrorAction SilentlyContinue |
     Where-Object { Test-Path (Join-Path $_.FullName 'meta.json') }
@@ -93,16 +144,36 @@ if (-not $accounts) {
 $list = @()
 foreach ($a in $accounts) {
     try { $m = Get-Content (Join-Path $a.FullName 'meta.json') -Raw | ConvertFrom-Json } catch { continue }
-    $list += [pscustomobject]@{ Email = $m.email; Dir = $a.FullName }
+    $tcFile = Join-Path $a.FullName 'tokenCache.txt'
+    $tc     = if (Test-Path $tcFile) { (Get-Content $tcFile -Raw).Trim() } else { $null }
+    $list += [pscustomobject]@{ Email = $m.email; Dir = $a.FullName; Token = $tc }
 }
 
 # -- Display picker ------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Switch Claude account ===" -ForegroundColor Cyan
 Test-ForUpdate
-for ($i = 0; $i -lt $list.Count; $i++) {
-    Write-Host ("  [{0}] {1}" -f ($i + 1), $list[$i].Email)
+
+# Identify the current account (live config token matches a saved one) + fetch usage.
+$liveRoot   = Get-SessionRoot
+$liveToken  = $null
+if ($liveRoot) {
+    try { $liveToken = (Read-FileShared (Join-Path $liveRoot 'config.json') | ConvertFrom-Json).'oauth:tokenCache' } catch {}
 }
+$keyHex = if ($liveRoot) { Get-AesKeyHex $liveRoot } else { $null }
+$haveNode = [bool](Get-Command node -ErrorAction SilentlyContinue)
+if ($haveNode) { Write-Host "Fetching usage..." -ForegroundColor DarkGray }
+
+for ($i = 0; $i -lt $list.Count; $i++) {
+    $mark = if ($liveToken -and $list[$i].Token -eq $liveToken) { '*' } else { ' ' }
+    $usageStr = ''
+    if ($haveNode) {
+        $u = Get-ClaudeUsage (Get-TokenFromBlob $list[$i].Token $keyHex)
+        $usageStr = if ($u) { "  5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization } else { "  usage n/a" }
+    }
+    Write-Host ("  [{0}] {1} {2,-32}{3}" -f ($i + 1), $mark, $list[$i].Email, $usageStr)
+}
+if ($haveNode) { Write-Host "  (* = current   |   lower % = more headroom)" -ForegroundColor DarkGray }
 Write-Host ""
 $pick = Read-Host "Pick an account number (or Enter to cancel)"
 if ([string]::IsNullOrWhiteSpace($pick)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
