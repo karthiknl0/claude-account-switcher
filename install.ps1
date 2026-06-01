@@ -73,8 +73,9 @@ foreach ($pf in $profiles) {
     # Remove any previous managed block (and legacy un-marked block), then append fresh.
     $pattern = [Regex]::Escape($beginMark) + '.*?' + [Regex]::Escape($endMark)
     $c = [Regex]::Replace($c, $pattern, '', 'Singleline')
-    # Legacy cleanup: drop the old un-delimited block from earlier versions.
-    $c = $c -replace '(?s)\r?\n# Claude desktop account switcher \(installed by claude-account-switcher\).*?function claude-add-account \{[^}]*\}', ''
+    # Legacy cleanup: drop any old un-delimited block from earlier versions
+    # (header may be bare "# Claude desktop account switcher" or with a suffix).
+    $c = $c -replace '(?s)\r?\n#\s*Claude desktop account switcher[^\r\n]*.*?function\s+claude-add-account\s*\{[^}]*\}', ''
     $c = $c.TrimEnd() + "`r`n`r`n" + $func + "`r`n"
     Set-Content -Path $pf -Value $c -Encoding UTF8
 }
