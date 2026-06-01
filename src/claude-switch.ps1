@@ -9,6 +9,29 @@ Add-Type -AssemblyName System.Security
 $store    = Join-Path $env:USERPROFILE '.claude-accounts'
 $credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
 $cfgPath  = Join-Path $env:USERPROFILE '.claude\.claude.json'
+$RawBase  = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
+
+# -- Update check (best-effort, cached once per day) ---------------------------
+function Test-ForUpdate {
+    try {
+        $checkFile = Join-Path $env:USERPROFILE '.claude-tools\.update-check'
+        if (Test-Path $checkFile) {
+            $age = (Get-Date) - (Get-Item $checkFile).LastWriteTime
+            if ($age -lt [TimeSpan]::FromDays(1)) { return }
+        }
+        New-Item -ItemType File -Force -Path $checkFile | Out-Null
+        (Get-Date -Format o) | Set-Content -Path $checkFile -ErrorAction SilentlyContinue
+
+        $remote  = (Invoke-RestMethod -Uri "$RawBase/VERSION" -TimeoutSec 4).ToString().Trim()
+        $verFile = Join-Path $env:USERPROFILE '.claude-tools\.version'
+        $local   = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { '0.0.0' }
+        if ([version]$remote -gt [version]$local) {
+            Write-Host ""
+            Write-Host "  * Update available: v$local -> v$remote" -ForegroundColor Yellow
+            Write-Host "    Run 'claude-switch-update' to upgrade." -ForegroundColor Yellow
+        }
+    } catch {}
+}
 
 # -- Helpers -------------------------------------------------------------------
 function Read-FileShared($path) {
@@ -133,6 +156,7 @@ foreach ($a in $accounts) {
 # -- Display picker ------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Switch Claude account ===" -ForegroundColor Cyan
+Test-ForUpdate
 Write-Host "Fetching usage..." -ForegroundColor DarkGray
 
 for ($i = 0; $i -lt $list.Count; $i++) {
