@@ -11,9 +11,31 @@ $PlatformMac = $false
 if (Test-Path variable:IsMacOS) { $PlatformMac = $IsMacOS }
 
 $store = Join-Path $HOME '.claude-cc-accounts'
-$cred  = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
-$cfg   = Join-Path $HOME '.claude.json'   # Claude Code's real config (home root), NOT ~/.claude/.claude.json
 $KeychainService = 'Claude Code-credentials'
+
+# --- Dynamic location resolution (works across machines / layouts) ------------
+# Honours CLAUDE_CONFIG_DIR and auto-detects the real .credentials.json and the
+# real .claude.json (the one that actually contains oauthAccount).
+$ConfigDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+
+$credCandidates = @(
+    (Join-Path $ConfigDir '.credentials.json'),
+    (Join-Path (Join-Path $HOME '.claude') '.credentials.json')
+) | Select-Object -Unique
+$cred = ($credCandidates | Where-Object { Test-Path $_ } | Get-Item -EA SilentlyContinue |
+         Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+if (-not $cred) { $cred = $credCandidates[0] }
+
+$cfgCandidates = @(
+    (Join-Path $HOME '.claude.json'),
+    (Join-Path $ConfigDir '.claude.json'),
+    (Join-Path (Join-Path $HOME '.claude') '.claude.json')
+) | Select-Object -Unique
+$cfg = $null
+foreach ($c in ($cfgCandidates | Where-Object { Test-Path $_ } | Get-Item -EA SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+    try { if ((Get-Content $c.FullName -Raw) -match '"oauthAccount"') { $cfg = $c.FullName; break } } catch {}
+}
+if (-not $cfg) { $cfg = $cfgCandidates[0] }
 $credLabel = if ($PlatformMac) { 'the login Keychain' } else { '~/.claude/.credentials.json' }
 
 # Extract a top-level object value as RAW JSON text (brace-balanced, string-aware)
