@@ -169,6 +169,19 @@ $chosen = $list[[int]$pick - 1]
 
 if ($chosen.Token -and $chosen.Token -eq $liveToken) {
     Write-Host "Already on $($chosen.Email)." -ForegroundColor Green
+    # The token already matches, but the displayed identity (oauthAccount in
+    # ~/.claude.json) can be out of sync - re-sync it so /status is correct.
+    if ($chosen.OAuthRaw -and (Test-Path $cfg)) {
+        try {
+            $cjRaw = Get-Content $cfg -Raw
+            $u = Set-JsonObjRaw $cjRaw 'oauthAccount' $chosen.OAuthRaw
+            if ($u -and $u -ne $cjRaw) {
+                Copy-Item $cfg "$cfg.bak" -Force -ErrorAction SilentlyContinue
+                [System.IO.File]::WriteAllText($cfg, $u, (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "Re-synced the displayed identity. Restart Claude Code if /status looked wrong." -ForegroundColor Cyan
+            }
+        } catch {}
+    }
     Start-Sleep -Seconds 2; return
 }
 
