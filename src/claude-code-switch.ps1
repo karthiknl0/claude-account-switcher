@@ -17,8 +17,30 @@ if (Test-Path variable:IsWindows) { $PlatformWin = $IsWindows }
 
 $store   = Join-Path $HOME '.claude-cc-accounts'
 $cred    = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
+$cfg     = Join-Path (Join-Path $HOME '.claude') '.claude.json'
 $KeychainService = 'Claude Code-credentials'
 $RawBase = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
+
+# Replace a top-level object value with raw JSON text, brace-balanced and
+# string-aware, leaving the rest of the file byte-for-byte unchanged. Used to
+# update oauthAccount in .claude.json without a lossy ConvertTo-Json round-trip.
+function Set-JsonObjRaw($text, $key, $newRaw) {
+    $m = [regex]::Match($text, '"' + [regex]::Escape($key) + '"\s*:\s*')
+    if (-not $m.Success) { return $null }
+    $i = $m.Index + $m.Length
+    if ($i -ge $text.Length -or $text[$i] -ne '{') { return $null }
+    $depth = 0; $inStr = $false; $esc = $false
+    for ($j = $i; $j -lt $text.Length; $j++) {
+        $ch = $text[$j]
+        if ($esc) { $esc = $false; continue }
+        if ($ch -eq '\') { $esc = $true; continue }
+        if ($ch -eq '"') { $inStr = -not $inStr; continue }
+        if ($inStr) { continue }
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { return $text.Substring(0, $i) + $newRaw + $text.Substring($j + 1) } }
+    }
+    return $null
+}
 
 # -- Platform-aware live-credential access -------------------------------------
 # Returns the raw credentials JSON string for the account currently logged in.
@@ -114,10 +136,11 @@ foreach ($a in $accounts) {
     try { $j = Get-Content $a.FullName -Raw | ConvertFrom-Json } catch { continue }
     if (-not $j.email -or -not $j.credentials) { continue }   # skip non-account files
     $list += [pscustomobject]@{
-        Email = $j.email
-        File  = $a.FullName
-        Creds = $j.credentials
-        Token = $j.credentials.claudeAiOauth.accessToken
+        Email    = $j.email
+        File     = $a.FullName
+        Creds    = $j.credentials
+        Token    = $j.credentials.claudeAiOauth.accessToken
+        OAuthRaw = $j.oauthAccountRaw
     }
 }
 
@@ -164,6 +187,22 @@ Get-ChildItem $backupDir -Filter 'backup-*.credentials.json' -ErrorAction Silent
 
 $json = $chosen.Creds | ConvertTo-Json -Depth 20
 Set-LiveCredsRaw $json
+
+# Also update the cached display identity in .claude.json so Claude Code's
+# /status shows the right account (it reads the email from oauthAccount, not the
+# token). Surgical replace - the rest of .claude.json is left untouched. Older
+# accounts saved before this feature have no OAuthRaw; switch to + re-run
+# 'claude-code-add' once to capture it.
+if ($chosen.OAuthRaw -and (Test-Path $cfg)) {
+    try {
+        $cjRaw   = Get-Content $cfg -Raw
+        $updated = Set-JsonObjRaw $cjRaw 'oauthAccount' $chosen.OAuthRaw
+        if ($updated -and $updated -ne $cjRaw) {
+            Copy-Item $cfg "$cfg.bak" -Force -ErrorAction SilentlyContinue
+            [System.IO.File]::WriteAllText($cfg, $updated, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    } catch {}
+}
 
 Write-Host ""
 Write-Host "Switched Claude Code to $($chosen.Email)." -ForegroundColor Green

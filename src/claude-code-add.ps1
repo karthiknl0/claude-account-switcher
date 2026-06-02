@@ -12,8 +12,30 @@ if (Test-Path variable:IsMacOS) { $PlatformMac = $IsMacOS }
 
 $store = Join-Path $HOME '.claude-cc-accounts'
 $cred  = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
+$cfg   = Join-Path (Join-Path $HOME '.claude') '.claude.json'
 $KeychainService = 'Claude Code-credentials'
 $credLabel = if ($PlatformMac) { 'the login Keychain' } else { '~/.claude/.credentials.json' }
+
+# Extract a top-level object value as RAW JSON text (brace-balanced, string-aware)
+# so oauthAccount is copied byte-for-byte (a ConvertTo-Json round-trip would
+# mangle its dates / nested fields).
+function Get-JsonObjRaw($text, $key) {
+    $m = [regex]::Match($text, '"' + [regex]::Escape($key) + '"\s*:\s*')
+    if (-not $m.Success) { return $null }
+    $i = $m.Index + $m.Length
+    if ($i -ge $text.Length -or $text[$i] -ne '{') { return $null }
+    $depth = 0; $inStr = $false; $esc = $false
+    for ($j = $i; $j -lt $text.Length; $j++) {
+        $ch = $text[$j]
+        if ($esc) { $esc = $false; continue }
+        if ($ch -eq '\') { $esc = $true; continue }
+        if ($ch -eq '"') { $inStr = -not $inStr; continue }
+        if ($inStr) { continue }
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { return $text.Substring($i, $j - $i + 1) } }
+    }
+    return $null
+}
 
 # -- Platform-aware live-credential access -------------------------------------
 function Get-LiveCredsRaw {
@@ -57,12 +79,19 @@ if (-not $c.claudeAiOauth) {
 $email = Read-Host "Email of the account currently logged into Claude Code"
 if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
 
+# Capture this account's display identity (oauthAccount) so a later switch can
+# update ~/.claude/.claude.json too - otherwise Claude Code's /status keeps
+# showing the previous account's email/org after switching.
+$oauthAccountRaw = $null
+if (Test-Path $cfg) { try { $oauthAccountRaw = Get-JsonObjRaw (Get-Content $cfg -Raw) 'oauthAccount' } catch {} }
+
 New-Item -ItemType Directory -Force -Path $store | Out-Null
 $safe = ($email -replace '[^\w.@+-]', '_')
 $file = Join-Path $store "$safe.json"
 
-[ordered]@{ email = $email; savedAt = (Get-Date -Format o); credentials = $c } |
-    ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+$entry = [ordered]@{ email = $email; savedAt = (Get-Date -Format o); credentials = $c }
+if ($oauthAccountRaw) { $entry.oauthAccountRaw = $oauthAccountRaw }
+$entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
 
 Write-Host ""
 Write-Host "Saved Claude Code account: $email" -ForegroundColor Green
