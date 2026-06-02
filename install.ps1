@@ -135,6 +135,25 @@ $endMark
     New-SwitchShortcut 'Claude Switch Account.lnk' $SwitchPath   'Switch the Claude desktop app account'
     New-SwitchShortcut 'Claude Code Switch.lnk'    $CcSwitchPath 'Switch the Claude Code (CLI) account'
 
+    # Launch shortcuts for the Claude Code CLI (open a console running the command).
+    function New-ClaudeLaunchShortcut($name, $cliArgs, $desc) {
+        $sc = $ws.CreateShortcut((Join-Path $desktop $name))
+        $sc.TargetPath       = $psExe
+        $sc.Arguments        = "-NoExit -Command `"claude $cliArgs`""
+        $sc.WorkingDirectory = $HOME
+        if ($icon) { $sc.IconLocation = $icon }
+        $sc.Description       = $desc
+        $sc.WindowStyle      = 1
+        $sc.Save()
+    }
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        New-ClaudeLaunchShortcut 'Claude Code.lnk'          ''           'Launch Claude Code (claude)'
+        New-ClaudeLaunchShortcut 'Claude Code Resume.lnk'   '--resume'   'Resume a Claude Code session (claude --resume)'
+        New-ClaudeLaunchShortcut 'Claude Code Continue.lnk' '--continue' 'Continue the last Claude Code session (claude --continue)'
+    } else {
+        Write-Host "      (claude CLI not on PATH - skipped Claude Code launch shortcuts)" -ForegroundColor DarkGray
+    }
+
     Write-Host ""
     Write-Host "Done! Claude Account Switcher is installed." -ForegroundColor Green
     Write-Host ""
