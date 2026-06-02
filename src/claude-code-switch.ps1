@@ -17,7 +17,7 @@ if (Test-Path variable:IsWindows) { $PlatformWin = $IsWindows }
 
 $store   = Join-Path $HOME '.claude-cc-accounts'
 $cred    = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
-$cfg     = Join-Path (Join-Path $HOME '.claude') '.claude.json'
+$cfg     = Join-Path $HOME '.claude.json'   # Claude Code's real config (home root), NOT ~/.claude/.claude.json
 $KeychainService = 'Claude Code-credentials'
 $RawBase = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
 

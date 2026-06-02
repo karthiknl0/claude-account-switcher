@@ -12,7 +12,7 @@ if (Test-Path variable:IsMacOS) { $PlatformMac = $IsMacOS }
 
 $store = Join-Path $HOME '.claude-cc-accounts'
 $cred  = Join-Path (Join-Path $HOME '.claude') '.credentials.json'
-$cfg   = Join-Path (Join-Path $HOME '.claude') '.claude.json'
+$cfg   = Join-Path $HOME '.claude.json'   # Claude Code's real config (home root), NOT ~/.claude/.claude.json
 $KeychainService = 'Claude Code-credentials'
 $credLabel = if ($PlatformMac) { 'the login Keychain' } else { '~/.claude/.credentials.json' }
 
