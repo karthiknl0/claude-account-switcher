@@ -56,14 +56,60 @@ function Start-Claude {
     if ($a) { Start-Process "shell:AppsFolder\$($a.AppID)" }
 }
 
+# Detect the email of the account ACTUALLY logged in, by decrypting the app's
+# oauth:tokenCache (AES-GCM via node, key via DPAPI) and asking the OAuth
+# profile endpoint. Guards against snapshotting under a mistyped email or
+# while the app is logged out (same guard claude-code-add has). Best-effort:
+# returns $null when node is missing or the token is dead.
+function Get-LoggedInEmail($root) {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+        $ls  = $null
+        try { $fs=[IO.File]::Open((Join-Path $root 'Local State'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $ls=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
+        $b   = [Convert]::FromBase64String(($ls | ConvertFrom-Json).os_crypt.encrypted_key)
+        $k   = [System.Security.Cryptography.ProtectedData]::Unprotect($b[5..($b.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $keyHex = ($k | ForEach-Object { $_.ToString('x2') }) -join ''
+        $cfgRaw = $null
+        try { $fs=[IO.File]::Open((Join-Path $root 'config.json'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $cfgRaw=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
+        $blob = ($cfgRaw | ConvertFrom-Json).'oauth:tokenCache'
+        if (-not $blob) { return $null }
+        $bytes     = [Convert]::FromBase64String($blob)
+        $nonceHex  = ($bytes[3..14]                 | ForEach-Object { $_.ToString('x2') }) -join ''
+        $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
+        $tmp  = Join-Path $env:TEMP ("ccadd_" + [guid]::NewGuid().ToString('N') + ".js")
+        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t)process.exit(0);fetch('https://api.anthropic.com/api/oauth/profile',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.json():null}).then(function(j){if(j&&j.account&&j.account.email)process.stdout.write(j.account.email)}).catch(function(){});"
+        Set-Content -Path $tmp -Value $code -Encoding ASCII
+        $out = cmd /c "node ""$tmp"" 2>nul"
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        if ($out) { return ([string]($out -join '')).Trim() }
+    } catch {}
+    return $null
+}
+
 $root = Get-SessionRoot
 if (-not $root) {
     Write-Host "Claude app data not found. Open Claude, log in, then retry." -ForegroundColor Red
     Start-Sleep -Seconds 3; return
 }
 
-$email = Read-Host "Email of the account currently logged into Claude"
-if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+$detected = Get-LoggedInEmail $root
+$email = $null
+if ($detected) {
+    $ans = Read-Host "Detected logged-in account: $detected - save this one? [Y/n]"
+    if ($ans -notmatch '^(n|no)$') { $email = $detected }
+} else {
+    Write-Host "Could not verify which account is logged in (token dead or node missing)." -ForegroundColor Yellow
+    Write-Host "If the app shows a sign-in screen, log in first - saving now would snapshot a logged-out session." -ForegroundColor Yellow
+}
+if (-not $email) {
+    $email = Read-Host "Email of the account currently logged into Claude"
+    if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+    if ($detected -and $email -ne $detected) {
+        Write-Host "You typed '$email' but the live session belongs to '$detected' - not saving a mislabeled snapshot." -ForegroundColor Red
+        Start-Sleep -Seconds 4; return
+    }
+}
 
 Write-Host "Closing Claude..." -ForegroundColor Cyan
 if (-not (Stop-Claude $root)) {
