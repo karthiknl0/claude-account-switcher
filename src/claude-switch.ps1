@@ -109,7 +109,12 @@ function Get-AesKeyHex($root) {
     } catch { return $null }
 }
 
-function Get-TokenFromBlob($blob, $keyHex) {
+# Decrypt the tokenCache blob AND fetch usage in a single node run. The HTTPS
+# call deliberately lives in node, not Invoke-RestMethod: under Windows
+# PowerShell 5.1 (the shell the Desktop shortcut uses) Invoke-RestMethod hangs
+# indefinitely reading this endpoint's successful responses (-TimeoutSec does
+# not cover the read stall); node's fetch with AbortSignal is immune.
+function Get-UsageFromBlob($blob, $keyHex) {
     if (-not $blob -or -not $keyHex) { return $null }
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     $tmp = Join-Path $env:TEMP ("ccsw_" + [guid]::NewGuid().ToString('N') + ".js")
@@ -117,23 +122,15 @@ function Get-TokenFromBlob($blob, $keyHex) {
         $bytes     = [Convert]::FromBase64String($blob)
         $nonceHex  = ($bytes[3..14]               | ForEach-Object { $_.ToString('x2') }) -join ''
         $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
-        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];process.stdout.write((v&&v.token)||'');"
+        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t)process.exit(0);fetch('https://api.anthropic.com/api/oauth/usage',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.text():''}).then(function(x){process.stdout.write(x)}).catch(function(){});"
         Set-Content -Path $tmp -Value $code -Encoding ASCII
         # Run via cmd so stderr is suppressed by cmd (avoids PowerShell's native-stderr quirk).
-        $tok = cmd /c "node ""$tmp"" 2>nul"
-        if ($tok) { return ([string]$tok).Trim() }
+        $out = cmd /c "node ""$tmp"" 2>nul"
+        if ($out) { try { return (($out -join "`n") | ConvertFrom-Json) } catch {} }
     } catch {} finally {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     }
     return $null
-}
-
-function Get-ClaudeUsage($accessToken) {
-    if (-not $accessToken) { return $null }
-    try {
-        $h = @{ 'Authorization' = "Bearer $accessToken"; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'oauth-2025-04-20' }
-        return Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $h -TimeoutSec 6
-    } catch { return $null }
 }
 
 # Format the reset times into a short, human line (local time). The 5h limit is
@@ -207,7 +204,7 @@ for ($i = 0; $i -lt $list.Count; $i++) {
     $mark = if ($liveToken -and $list[$i].Token -eq $liveToken) { '*' } else { ' ' }
     $usageStr = ''
     if ($haveNode) {
-        $u = Get-ClaudeUsage (Get-TokenFromBlob $list[$i].Token $keyHex)
+        $u = Get-UsageFromBlob $list[$i].Token $keyHex
         $usageStr = if ($u) { "  5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization } else { "  usage n/a" }
     }
     Write-Host ("  [{0}] {1} {2,-32}{3}" -f ($i + 1), $mark, $list[$i].Email, $usageStr)
