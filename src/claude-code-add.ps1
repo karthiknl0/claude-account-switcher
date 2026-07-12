@@ -98,14 +98,33 @@ if (-not $c.claudeAiOauth) {
     Start-Sleep -Seconds 2; return
 }
 
-$email = Read-Host "Email of the account currently logged into Claude Code"
-if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
-
 # Capture this account's display identity (oauthAccount) so a later switch can
 # update ~/.claude/.claude.json too - otherwise Claude Code's /status keeps
-# showing the previous account's email/org after switching.
+# showing the previous account's email/org after switching. It also tells us the
+# email of the login we're about to snapshot, so we can catch a mistyped email
+# (saving login X under email Y makes two picker entries point at the SAME
+# account, and Y's real credentials are lost).
 $oauthAccountRaw = $null
 if (Test-Path $cfg) { try { $oauthAccountRaw = Get-JsonObjRaw (Get-Content $cfg -Raw) 'oauthAccount' } catch {} }
+$detected = $null
+if ($oauthAccountRaw) { try { $detected = ($oauthAccountRaw | ConvertFrom-Json).emailAddress } catch {} }
+
+if ($detected) {
+    $email = Read-Host "Email of the logged-in account [Enter = $detected]"
+    if ([string]::IsNullOrWhiteSpace($email)) { $email = $detected }
+} else {
+    $email = Read-Host "Email of the account currently logged into Claude Code"
+    if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+}
+if ($detected -and $email -ne $detected) {
+    Write-Host ""
+    Write-Host "Warning: Claude Code says the CURRENT login is $detected, not $email." -ForegroundColor Yellow
+    Write-Host "Saving this login under $email would overwrite that account's saved" -ForegroundColor Yellow
+    Write-Host "credentials with $detected's (both entries would then be the same account)." -ForegroundColor Yellow
+    Write-Host "If you meant to add $email, run /login as $email first, then re-run this." -ForegroundColor Yellow
+    $go = Read-Host "Save anyway as $email? [y/N]"
+    if ($go -notmatch '^(y|yes)$') { Write-Host "Cancelled." -ForegroundColor Yellow; Start-Sleep -Seconds 2; return }
+}
 
 New-Item -ItemType Directory -Force -Path $store | Out-Null
 $safe = ($email -replace '[^\w.@+-]', '_')
