@@ -167,6 +167,39 @@ foreach ($a in $accounts) {
     }
 }
 
+# -- Sync-back: keep the current account's snapshot fresh -----------------------
+# Claude Code ROTATES its OAuth refresh token every time it refreshes the access
+# token, invalidating the previous one server-side. A snapshot taken at
+# claude-code-add time therefore goes stale after the next real session, and
+# restoring that stale snapshot later logs the account out. So before anything
+# else, write the LIVE credentials back into the saved file of the account they
+# belong to (matched by token, falling back to the email in .claude.json's
+# oauthAccount, since a rotated token no longer matches the snapshot).
+$currentEmail = $null
+if (Test-Path $cfg) {
+    try { $currentEmail = (Get-Content $cfg -Raw | ConvertFrom-Json).oauthAccount.emailAddress } catch {}
+}
+$currentAcct = $null
+if ($liveToken) { $currentAcct = $list | Where-Object { $_.Token -eq $liveToken } | Select-Object -First 1 }
+if (-not $currentAcct -and $currentEmail) {
+    $currentAcct = $list | Where-Object { $_.Email -eq $currentEmail } | Select-Object -First 1
+}
+if ($currentAcct -and $liveRaw) {
+    try {
+        $liveCreds = $liveRaw | ConvertFrom-Json
+        if ($liveCreds.claudeAiOauth.accessToken -and $liveCreds.claudeAiOauth.accessToken -ne $currentAcct.Token) {
+            $entry = [ordered]@{ email = $currentAcct.Email; savedAt = (Get-Date -Format o); credentials = $liveCreds }
+            if ($currentAcct.OAuthRaw) { $entry.oauthAccountRaw = $currentAcct.OAuthRaw }
+            [System.IO.File]::WriteAllText($currentAcct.File, ($entry | ConvertTo-Json -Depth 20),
+                (New-Object System.Text.UTF8Encoding($false)))
+            $currentAcct.Creds = $liveCreds
+            $currentAcct.Token = $liveCreds.claudeAiOauth.accessToken
+            $liveToken = $currentAcct.Token
+            Write-Host "  (refreshed the saved snapshot for $($currentAcct.Email))" -ForegroundColor DarkGray
+        }
+    } catch {}
+}
+
 # -- Display picker ------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Switch Claude Code account ===" -ForegroundColor Cyan
