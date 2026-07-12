@@ -94,6 +94,10 @@ function Read-FileShared($path) {
 
 function Get-AesKeyHex($root) {
     try {
+        # ProtectedData isn't auto-loaded on Windows PowerShell 5.1 (the shell
+        # the Desktop shortcut uses); without this the whole usage column
+        # silently degrades to "usage n/a".
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $ls = Read-FileShared (Join-Path $root 'Local State')
         if (-not $ls) { return $null }
         $b64   = ($ls | ConvertFrom-Json).os_crypt.encrypted_key
