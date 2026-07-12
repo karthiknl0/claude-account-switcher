@@ -99,6 +99,14 @@ if (Test-Path $cfgFile) {
 [ordered]@{ email = $email; savedAt = (Get-Date -Format o); sourceRoot = $root } |
     ConvertTo-Json | Set-Content -Path (Join-Path $dest 'meta.json') -Encoding UTF8
 
+# Mark this account as the one the live session belongs to, so claude-switch
+# can sync the live session back into this snapshot even after the app rotates
+# its tokens (a rotated token no longer matches the saved tokenCache).
+try {
+    [System.IO.File]::WriteAllText((Join-Path $store '.current'), $email,
+        (New-Object System.Text.UTF8Encoding($false)))
+} catch {}
+
 Write-Host ""
 Write-Host "Saved account: $email" -ForegroundColor Green
 Write-Host ""
@@ -110,6 +118,10 @@ Write-Host ""
 $more = Read-Host "Add ANOTHER account now? (clears local login WITHOUT logging out, shows sign-in) [y/N]"
 if ($more -match '^(y|yes)$') {
     Write-Host "Clearing local session (not logging out $email)..." -ForegroundColor Cyan
+    # The live session is about to belong to a different (not yet saved)
+    # account - drop the marker so claude-switch doesn't sync the new login
+    # back into this account's snapshot.
+    Remove-Item (Join-Path $store '.current') -Force -ErrorAction SilentlyContinue
     foreach ($f in $SessionFolders) {
         $p = Join-Path $root $f
         if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue }

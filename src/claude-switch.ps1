@@ -182,6 +182,19 @@ $liveToken  = $null
 if ($liveRoot) {
     try { $liveToken = (Read-FileShared (Join-Path $liveRoot 'config.json') | ConvertFrom-Json).'oauth:tokenCache' } catch {}
 }
+# The app rotates its session tokens while it runs, so the live token may no
+# longer match any saved snapshot. Fall back to the marker written on the last
+# switch to still know which saved account the live session belongs to.
+$currentFile = Join-Path $store '.current'
+$currentAcct = $null
+if ($liveToken) { $currentAcct = $list | Where-Object { $_.Token -eq $liveToken } | Select-Object -First 1 }
+if (-not $currentAcct -and (Test-Path $currentFile)) {
+    try {
+        $curEmail    = (Get-Content $currentFile -Raw).Trim()
+        $currentAcct = $list | Where-Object { $_.Email -eq $curEmail } | Select-Object -First 1
+    } catch {}
+}
+if ($currentAcct) { $liveToken = $currentAcct.Token }
 $keyHex = if ($liveRoot) { Get-AesKeyHex $liveRoot } else { $null }
 $haveNode = [bool](Get-Command node -ErrorAction SilentlyContinue)
 if ($haveNode) { Write-Host "Fetching usage..." -ForegroundColor DarkGray }
@@ -234,6 +247,22 @@ Get-ChildItem $store -Directory -Filter '.backup-*' -ErrorAction SilentlyContinu
     Sort-Object Name -Descending | Select-Object -Skip 1 |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
+# Sync-back: the app rotates its session tokens/cookies while it runs, so the
+# snapshot taken at claude-add time goes stale and restoring it later logs that
+# account out. Write the LIVE session back into the saved folder of the account
+# it belongs to before swapping away from it (same fix as claude-code-switch).
+if ($currentAcct) {
+    Write-Host "Refreshing saved session for $($currentAcct.Email)..." -ForegroundColor DarkGray
+    Copy-Session $root (Join-Path $currentAcct.Dir 'session')
+    try {
+        $liveTc = (Read-FileShared (Join-Path $root 'config.json') | ConvertFrom-Json).'oauth:tokenCache'
+        if ($liveTc) {
+            [System.IO.File]::WriteAllText((Join-Path $currentAcct.Dir 'tokenCache.txt'), $liveTc,
+                (New-Object System.Text.UTF8Encoding($false)))
+        }
+    } catch {}
+}
+
 Write-Host "Loading session for $($chosen.Email)..." -ForegroundColor Cyan
 Copy-Session $chosenSess $root
 
@@ -257,6 +286,13 @@ if (Test-Path $tcFile) {
         } catch {}
     }
 }
+
+# Remember which saved account the live session now belongs to, so the next
+# sync-back can identify it even after the app rotates its tokens.
+try {
+    [System.IO.File]::WriteAllText((Join-Path $store '.current'), $chosen.Email,
+        (New-Object System.Text.UTF8Encoding($false)))
+} catch {}
 
 Write-Host "Reopening Claude..." -ForegroundColor Cyan
 if (Start-Claude) {
