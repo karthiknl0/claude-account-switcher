@@ -59,8 +59,11 @@ function Start-Claude {
 # Detect the email of the account ACTUALLY logged in, by decrypting the app's
 # oauth:tokenCache (AES-GCM via node, key via DPAPI) and asking the OAuth
 # profile endpoint. Guards against snapshotting under a mistyped email or
-# while the app is logged out (same guard claude-code-add has). Best-effort:
-# returns $null when node is missing or the token is dead.
+# while the app is logged out (same guard claude-code-add has). Returns:
+#   a string email  - positively identified
+#   'EMPTY'         - token cache decrypted fine but holds no token at all
+#                      (definitely logged out - never overridable)
+#   $null           - undetermined (node missing, dead/expired token, etc.)
 function Get-LoggedInEmail($root) {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     try {
@@ -73,12 +76,14 @@ function Get-LoggedInEmail($root) {
         $cfgRaw = $null
         try { $fs=[IO.File]::Open((Join-Path $root 'config.json'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $cfgRaw=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
         $blob = ($cfgRaw | ConvertFrom-Json).'oauth:tokenCache'
-        if (-not $blob) { return $null }
+        if (-not $blob) { return 'EMPTY' }
         $bytes     = [Convert]::FromBase64String($blob)
         $nonceHex  = ($bytes[3..14]                 | ForEach-Object { $_.ToString('x2') }) -join ''
         $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
         $tmp  = Join-Path $env:TEMP ("ccadd_" + [guid]::NewGuid().ToString('N') + ".js")
-        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t)process.exit(0);fetch('https://api.anthropic.com/api/oauth/profile',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.json():null}).then(function(j){if(j&&j.account&&j.account.email)process.stdout.write(j.account.email)}).catch(function(){});"
+        # Prints 'EMPTY' when the blob decrypts but no account holds a token
+        # (app is at the sign-in screen); otherwise the detected email.
+        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t){process.stdout.write('EMPTY');process.exit(0);}fetch('https://api.anthropic.com/api/oauth/profile',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.json():null}).then(function(j){if(j&&j.account&&j.account.email)process.stdout.write(j.account.email)}).catch(function(){});"
         Set-Content -Path $tmp -Value $code -Encoding ASCII
         $out = cmd /c "node ""$tmp"" 2>nul"
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
@@ -94,6 +99,11 @@ if (-not $root) {
 }
 
 $detected = Get-LoggedInEmail $root
+if ($detected -eq 'EMPTY') {
+    Write-Host "Claude isn't logged into any account right now (token cache is empty)." -ForegroundColor Red
+    Write-Host "Log in first, then run 'claude-add-account' again - saving now would snapshot a logged-out session that fails on restore." -ForegroundColor Red
+    Start-Sleep -Seconds 4; return
+}
 $email = $null
 if ($detected) {
     $ans = Read-Host "Detected logged-in account: $detected - save this one? [Y/n]"
