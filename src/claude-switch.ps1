@@ -81,7 +81,87 @@ function Copy-Session($srcRoot, $dstRoot) {
     }
 }
 
-# -- Usage display (best-effort; needs Node for AES-GCM decrypt) ----------------
+# -- Usage display -------------------------------------------------------------
+# AES-256-GCM decrypt of the app's tokenCache via bcrypt.dll (Windows' native
+# CNG crypto library) through a direct P/Invoke - no external process, no temp
+# script files, no Node dependency. PowerShell 5.1's .NET Framework has no
+# built-in AesGcm class (that only ships in .NET 5+), so this is the only
+# in-process option that works on both 5.1 (the Desktop shortcut's shell) and
+# pwsh 7. Deliberately not shelling out to node/cmd here: reading a browser-
+# style credential store, decrypting it, and spawning a child process to do so
+# is the exact behavioral pattern security software flags as credential
+# theft - this keeps everything in-process and inspectable.
+$BCryptSrc = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class BCryptAesGcm
+{
+    [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
+    static extern uint BCryptOpenAlgorithmProvider(out IntPtr phAlgorithm, string pszAlgId, string pszImplementation, uint dwFlags);
+    [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
+    static extern uint BCryptSetProperty(IntPtr hObject, string pszProperty, string pbInput, int cbInput, uint dwFlags);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptGenerateSymmetricKey(IntPtr hAlgorithm, out IntPtr phKey, IntPtr pbKeyObject, uint cbKeyObject, byte[] pbSecret, uint cbSecret, uint dwFlags);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptDestroyKey(IntPtr hKey);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptCloseAlgorithmProvider(IntPtr hAlgorithm, uint dwFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO
+    {
+        public uint cbSize; public uint dwInfoVersion;
+        public IntPtr pbNonce; public uint cbNonce;
+        public IntPtr pbAuthData; public uint cbAuthData;
+        public IntPtr pbTag; public uint cbTag;
+        public IntPtr pbMacContext; public uint cbMacContext;
+        public uint cbAAD; public ulong cbData; public uint dwFlags;
+    }
+
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptDecrypt(IntPtr hKey, byte[] pbInput, uint cbInput, ref BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO pPaddingInfo, byte[] pbIV, uint cbIV, byte[] pbOutput, uint cbOutput, out uint pcbResult, uint dwFlags);
+
+    public static byte[] Decrypt(byte[] key, byte[] nonce, byte[] cipherText, byte[] tag)
+    {
+        IntPtr hAlg = IntPtr.Zero, hKey = IntPtr.Zero;
+        uint status = BCryptOpenAlgorithmProvider(out hAlg, "AES", null, 0);
+        if (status != 0) throw new Exception("OpenAlgorithmProvider failed: 0x" + status.ToString("X"));
+        string mode = "ChainingModeGCM";
+        status = BCryptSetProperty(hAlg, "ChainingMode", mode, (mode.Length + 1) * 2, 0);
+        if (status != 0) throw new Exception("SetProperty failed: 0x" + status.ToString("X"));
+        status = BCryptGenerateSymmetricKey(hAlg, out hKey, IntPtr.Zero, 0, key, (uint)key.Length, 0);
+        if (status != 0) throw new Exception("GenerateSymmetricKey failed: 0x" + status.ToString("X"));
+        GCHandle nonceHandle = GCHandle.Alloc(nonce, GCHandleType.Pinned);
+        GCHandle tagHandle = GCHandle.Alloc(tag, GCHandleType.Pinned);
+        try
+        {
+            var info = new BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO();
+            info.cbSize = (uint)Marshal.SizeOf(typeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO));
+            info.dwInfoVersion = 1;
+            info.pbNonce = nonceHandle.AddrOfPinnedObject(); info.cbNonce = (uint)nonce.Length;
+            info.pbTag = tagHandle.AddrOfPinnedObject(); info.cbTag = (uint)tag.Length;
+            byte[] output = new byte[cipherText.Length];
+            uint resultLen;
+            status = BCryptDecrypt(hKey, cipherText, (uint)cipherText.Length, ref info, null, 0, output, (uint)output.Length, out resultLen, 0);
+            if (status != 0) throw new Exception("BCryptDecrypt failed: 0x" + status.ToString("X"));
+            byte[] result = new byte[resultLen];
+            Array.Copy(output, result, resultLen);
+            return result;
+        }
+        finally
+        {
+            nonceHandle.Free(); tagHandle.Free();
+            if (hKey != IntPtr.Zero) BCryptDestroyKey(hKey);
+            if (hAlg != IntPtr.Zero) BCryptCloseAlgorithmProvider(hAlg, 0);
+        }
+    }
+}
+'@
+try { [BCryptAesGcm] | Out-Null } catch { Add-Type -TypeDefinition $BCryptSrc -Language CSharp -ErrorAction SilentlyContinue }
+Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+
 function Read-FileShared($path) {
     try {
         $fs     = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
@@ -92,45 +172,62 @@ function Read-FileShared($path) {
     } catch { return $null }
 }
 
-function Get-AesKeyHex($root) {
+function Get-AesKey($root) {
     try {
-        # ProtectedData isn't auto-loaded on Windows PowerShell 5.1 (the shell
-        # the Desktop shortcut uses); without this the whole usage column
-        # silently degrades to "usage n/a".
-        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $ls = Read-FileShared (Join-Path $root 'Local State')
         if (-not $ls) { return $null }
         $b64   = ($ls | ConvertFrom-Json).os_crypt.encrypted_key
         $bytes = [Convert]::FromBase64String($b64)
-        $key   = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                     $bytes[5..($bytes.Length - 1)], $null,
-                     [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        return ($key | ForEach-Object { $_.ToString('x2') }) -join ''
+        return [System.Security.Cryptography.ProtectedData]::Unprotect(
+                   $bytes[5..($bytes.Length - 1)], $null,
+                   [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
     } catch { return $null }
 }
 
-# Decrypt the tokenCache blob AND fetch usage in a single node run. The HTTPS
-# call deliberately lives in node, not Invoke-RestMethod: under Windows
-# PowerShell 5.1 (the shell the Desktop shortcut uses) Invoke-RestMethod hangs
-# indefinitely reading this endpoint's successful responses (-TimeoutSec does
-# not cover the read stall); node's fetch with AbortSignal is immune.
-function Get-UsageFromBlob($blob, $keyHex) {
-    if (-not $blob -or -not $keyHex) { return $null }
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
-    $tmp = Join-Path $env:TEMP ("ccsw_" + [guid]::NewGuid().ToString('N') + ".js")
+function Get-TokenFromBlob($blob, $key) {
+    if (-not $blob -or -not $key) { return $null }
     try {
-        $bytes     = [Convert]::FromBase64String($blob)
-        $nonceHex  = ($bytes[3..14]               | ForEach-Object { $_.ToString('x2') }) -join ''
-        $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
-        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t)process.exit(0);fetch('https://api.anthropic.com/api/oauth/usage',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.text():''}).then(function(x){process.stdout.write(x)}).catch(function(){});"
-        Set-Content -Path $tmp -Value $code -Encoding ASCII
-        # Run via cmd so stderr is suppressed by cmd (avoids PowerShell's native-stderr quirk).
-        $out = cmd /c "node ""$tmp"" 2>nul"
-        if ($out) { try { return (($out -join "`n") | ConvertFrom-Json) } catch {} }
-    } catch {} finally {
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    }
-    return $null
+        $bytes        = [Convert]::FromBase64String($blob)
+        $nonce        = $bytes[3..14]
+        $cipherAndTag = $bytes[15..($bytes.Length - 1)]
+        $cipherLen    = $cipherAndTag.Length - 16
+        $cipherText   = $cipherAndTag[0..($cipherLen - 1)]
+        $tag          = $cipherAndTag[$cipherLen..($cipherAndTag.Length - 1)]
+        $plainBytes   = [BCryptAesGcm]::Decrypt($key, $nonce, $cipherText, $tag)
+        $plainText    = [System.Text.Encoding]::UTF8.GetString($plainBytes)
+        $entry        = ($plainText | ConvertFrom-Json).PSObject.Properties.Value | Select-Object -First 1
+        return $entry.token
+    } catch { return $null }
+}
+
+# HttpClient, not Invoke-RestMethod: under Windows PowerShell 5.1 (the Desktop
+# shortcut's shell) Invoke-RestMethod hangs indefinitely reading a SUCCESSFUL
+# response from this endpoint (-TimeoutSec doesn't cover the read stall);
+# error responses return instantly. HttpClient with its own Timeout is immune.
+$HttpClient = $null
+function Get-ClaudeUsage($accessToken) {
+    if (-not $accessToken) { return $null }
+    try {
+        if (-not $script:HttpClient) {
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $script:HttpClient = New-Object System.Net.Http.HttpClient($handler)
+            $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(6)
+        }
+        $req = New-Object System.Net.Http.HttpRequestMessage('GET', 'https://api.anthropic.com/api/oauth/usage')
+        $req.Headers.Add('Authorization', "Bearer $accessToken")
+        $req.Headers.Add('anthropic-version', '2023-06-01')
+        $req.Headers.Add('anthropic-beta', 'oauth-2025-04-20')
+        $resp = $script:HttpClient.SendAsync($req).GetAwaiter().GetResult()
+        if (-not $resp.IsSuccessStatusCode) { return $null }
+        $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        return ($body | ConvertFrom-Json)
+    } catch { return $null }
+}
+
+function Get-UsageFromBlob($blob, $key) {
+    $tok = Get-TokenFromBlob $blob $key
+    if (-not $tok) { return $null }
+    return Get-ClaudeUsage $tok
 }
 
 # Format the reset times into a short, human line (local time). The 5h limit is
@@ -196,24 +293,18 @@ if (-not $currentAcct -and (Test-Path $currentFile)) {
     } catch {}
 }
 if ($currentAcct) { $liveToken = $currentAcct.Token }
-$keyHex = if ($liveRoot) { Get-AesKeyHex $liveRoot } else { $null }
-$haveNode = [bool](Get-Command node -ErrorAction SilentlyContinue)
-if ($haveNode) { Write-Host "Fetching usage..." -ForegroundColor DarkGray }
+$aesKey = if ($liveRoot) { Get-AesKey $liveRoot } else { $null }
+Write-Host "Fetching usage..." -ForegroundColor DarkGray
 
 for ($i = 0; $i -lt $list.Count; $i++) {
     $mark = if ($liveToken -and $list[$i].Token -eq $liveToken) { '*' } else { ' ' }
-    $usageStr = ''
-    if ($haveNode) {
-        $u = Get-UsageFromBlob $list[$i].Token $keyHex
-        $usageStr = if ($u) { "  5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization } else { "  usage n/a" }
-    }
+    $u = Get-UsageFromBlob $list[$i].Token $aesKey
+    $usageStr = if ($u) { "  5h {0,3}% / 7d {1,3}% used" -f [int]$u.five_hour.utilization, [int]$u.seven_day.utilization } else { "  usage n/a" }
     Write-Host ("  [{0}] {1} {2,-32}{3}" -f ($i + 1), $mark, $list[$i].Email, $usageStr)
-    if ($haveNode) {
-        $resetStr = Format-Resets $u
-        if ($resetStr) { Write-Host ("        $resetStr") -ForegroundColor DarkGray }
-    }
+    $resetStr = Format-Resets $u
+    if ($resetStr) { Write-Host ("        $resetStr") -ForegroundColor DarkGray }
 }
-if ($haveNode) { Write-Host "  (* = current   |   lower % = more headroom)" -ForegroundColor DarkGray }
+Write-Host "  (* = current   |   lower % = more headroom)" -ForegroundColor DarkGray
 Write-Host ""
 $pick = Read-Host "Pick an account number (or Enter to cancel)"
 if ([string]::IsNullOrWhiteSpace($pick)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }

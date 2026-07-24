@@ -124,9 +124,9 @@ account.
 > ⚠️ Run it from a **standalone** PowerShell window (or the Desktop shortcut),
 > **not** from inside a Claude session — switching force-closes the desktop app.
 >
-> The **usage readout** (5-hour / 7-day % used) needs [Node.js](https://nodejs.org)
-> installed; without it the menu just lists emails. An account whose saved token
-> has expired shows `usage n/a` until you next switch to it.
+> The **usage readout** (5-hour / 7-day % used) works out of the box - no Node
+> or any other dependency needed. An account whose saved token has expired
+> shows `usage n/a` until you next switch to it.
 
 ---
 
@@ -158,7 +158,7 @@ accounts), `claude --resume` picks up exactly where you left off — now billed 
 the account you switched to.
 
 > Close any open Claude Code session before switching so it re-reads the new
-> login. Usage shows here **without** Node (the CLI token is read directly).
+> login.
 
 ---
 

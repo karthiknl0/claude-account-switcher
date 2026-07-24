@@ -108,11 +108,28 @@ function Test-ForUpdate {
     } catch {}
 }
 
+# HttpClient, not Invoke-RestMethod: under Windows PowerShell 5.1
+# Invoke-RestMethod can hang reading a SUCCESSFUL response from this endpoint
+# (-TimeoutSec doesn't cover the read stall); error responses return
+# instantly. HttpClient with its own Timeout is immune.
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+$script:HttpClient = $null
 function Get-ClaudeUsage($accessToken) {
     if (-not $accessToken) { return $null }
     try {
-        $h = @{ 'Authorization' = "Bearer $accessToken"; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'oauth-2025-04-20' }
-        return Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $h -TimeoutSec 6
+        if (-not $script:HttpClient) {
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $script:HttpClient = New-Object System.Net.Http.HttpClient($handler)
+            $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(6)
+        }
+        $req = New-Object System.Net.Http.HttpRequestMessage('GET', 'https://api.anthropic.com/api/oauth/usage')
+        $req.Headers.Add('Authorization', "Bearer $accessToken")
+        $req.Headers.Add('anthropic-version', '2023-06-01')
+        $req.Headers.Add('anthropic-beta', 'oauth-2025-04-20')
+        $resp = $script:HttpClient.SendAsync($req).GetAwaiter().GetResult()
+        if (-not $resp.IsSuccessStatusCode) { return $null }
+        $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        return ($body | ConvertFrom-Json)
     } catch { return $null }
 }
 

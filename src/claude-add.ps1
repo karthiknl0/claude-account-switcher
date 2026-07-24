@@ -56,38 +56,128 @@ function Start-Claude {
     if ($a) { Start-Process "shell:AppsFolder\$($a.AppID)" }
 }
 
+# AES-256-GCM decrypt of the app's tokenCache via bcrypt.dll (Windows' native
+# CNG crypto library) through a direct P/Invoke - no external process, no temp
+# script files, no Node dependency. PowerShell 5.1's .NET Framework has no
+# built-in AesGcm class (that only ships in .NET 5+), so this is the only
+# in-process option that works on both 5.1 and pwsh 7. Deliberately not
+# shelling out to node/cmd here: reading a browser-style credential store,
+# decrypting it, and spawning a child process to do so is the exact
+# behavioral pattern security software flags as credential theft - this
+# keeps everything in-process and inspectable.
+$BCryptSrc = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class BCryptAesGcm
+{
+    [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
+    static extern uint BCryptOpenAlgorithmProvider(out IntPtr phAlgorithm, string pszAlgId, string pszImplementation, uint dwFlags);
+    [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
+    static extern uint BCryptSetProperty(IntPtr hObject, string pszProperty, string pbInput, int cbInput, uint dwFlags);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptGenerateSymmetricKey(IntPtr hAlgorithm, out IntPtr phKey, IntPtr pbKeyObject, uint cbKeyObject, byte[] pbSecret, uint cbSecret, uint dwFlags);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptDestroyKey(IntPtr hKey);
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptCloseAlgorithmProvider(IntPtr hAlgorithm, uint dwFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO
+    {
+        public uint cbSize; public uint dwInfoVersion;
+        public IntPtr pbNonce; public uint cbNonce;
+        public IntPtr pbAuthData; public uint cbAuthData;
+        public IntPtr pbTag; public uint cbTag;
+        public IntPtr pbMacContext; public uint cbMacContext;
+        public uint cbAAD; public ulong cbData; public uint dwFlags;
+    }
+
+    [DllImport("bcrypt.dll")]
+    static extern uint BCryptDecrypt(IntPtr hKey, byte[] pbInput, uint cbInput, ref BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO pPaddingInfo, byte[] pbIV, uint cbIV, byte[] pbOutput, uint cbOutput, out uint pcbResult, uint dwFlags);
+
+    public static byte[] Decrypt(byte[] key, byte[] nonce, byte[] cipherText, byte[] tag)
+    {
+        IntPtr hAlg = IntPtr.Zero, hKey = IntPtr.Zero;
+        uint status = BCryptOpenAlgorithmProvider(out hAlg, "AES", null, 0);
+        if (status != 0) throw new Exception("OpenAlgorithmProvider failed: 0x" + status.ToString("X"));
+        string mode = "ChainingModeGCM";
+        status = BCryptSetProperty(hAlg, "ChainingMode", mode, (mode.Length + 1) * 2, 0);
+        if (status != 0) throw new Exception("SetProperty failed: 0x" + status.ToString("X"));
+        status = BCryptGenerateSymmetricKey(hAlg, out hKey, IntPtr.Zero, 0, key, (uint)key.Length, 0);
+        if (status != 0) throw new Exception("GenerateSymmetricKey failed: 0x" + status.ToString("X"));
+        GCHandle nonceHandle = GCHandle.Alloc(nonce, GCHandleType.Pinned);
+        GCHandle tagHandle = GCHandle.Alloc(tag, GCHandleType.Pinned);
+        try
+        {
+            var info = new BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO();
+            info.cbSize = (uint)Marshal.SizeOf(typeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO));
+            info.dwInfoVersion = 1;
+            info.pbNonce = nonceHandle.AddrOfPinnedObject(); info.cbNonce = (uint)nonce.Length;
+            info.pbTag = tagHandle.AddrOfPinnedObject(); info.cbTag = (uint)tag.Length;
+            byte[] output = new byte[cipherText.Length];
+            uint resultLen;
+            status = BCryptDecrypt(hKey, cipherText, (uint)cipherText.Length, ref info, null, 0, output, (uint)output.Length, out resultLen, 0);
+            if (status != 0) throw new Exception("BCryptDecrypt failed: 0x" + status.ToString("X"));
+            byte[] result = new byte[resultLen];
+            Array.Copy(output, result, resultLen);
+            return result;
+        }
+        finally
+        {
+            nonceHandle.Free(); tagHandle.Free();
+            if (hKey != IntPtr.Zero) BCryptDestroyKey(hKey);
+            if (hAlg != IntPtr.Zero) BCryptCloseAlgorithmProvider(hAlg, 0);
+        }
+    }
+}
+'@
+try { [BCryptAesGcm] | Out-Null } catch { Add-Type -TypeDefinition $BCryptSrc -Language CSharp -ErrorAction SilentlyContinue }
+Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+
 # Detect the email of the account ACTUALLY logged in, by decrypting the app's
-# oauth:tokenCache (AES-GCM via node, key via DPAPI) and asking the OAuth
-# profile endpoint. Guards against snapshotting under a mistyped email or
-# while the app is logged out (same guard claude-code-add has). Returns:
+# oauth:tokenCache and asking the OAuth profile endpoint. Guards against
+# snapshotting under a mistyped email or while the app is logged out (same
+# guard claude-code-add has). Returns:
 #   a string email  - positively identified
 #   'EMPTY'         - token cache decrypted fine but holds no token at all
 #                      (definitely logged out - never overridable)
-#   $null           - undetermined (node missing, dead/expired token, etc.)
+#   $null           - undetermined (dead/expired token, decrypt failure, etc.)
 function Get-LoggedInEmail($root) {
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     try {
-        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $ls  = $null
         try { $fs=[IO.File]::Open((Join-Path $root 'Local State'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $ls=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
         $b   = [Convert]::FromBase64String(($ls | ConvertFrom-Json).os_crypt.encrypted_key)
-        $k   = [System.Security.Cryptography.ProtectedData]::Unprotect($b[5..($b.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        $keyHex = ($k | ForEach-Object { $_.ToString('x2') }) -join ''
+        $key = [System.Security.Cryptography.ProtectedData]::Unprotect($b[5..($b.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
         $cfgRaw = $null
         try { $fs=[IO.File]::Open((Join-Path $root 'config.json'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $cfgRaw=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
         $blob = ($cfgRaw | ConvertFrom-Json).'oauth:tokenCache'
         if (-not $blob) { return 'EMPTY' }
-        $bytes     = [Convert]::FromBase64String($blob)
-        $nonceHex  = ($bytes[3..14]                 | ForEach-Object { $_.ToString('x2') }) -join ''
-        $cipherHex = ($bytes[15..($bytes.Length-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
-        $tmp  = Join-Path $env:TEMP ("ccadd_" + [guid]::NewGuid().ToString('N') + ".js")
-        # Prints 'EMPTY' when the blob decrypts but no account holds a token
-        # (app is at the sign-in screen); otherwise the detected email.
-        $code = "const c=require('crypto');const ct=Buffer.from('$cipherHex','hex');const d=c.createDecipheriv('aes-256-gcm',Buffer.from('$keyHex','hex'),Buffer.from('$nonceHex','hex'));d.setAuthTag(ct.slice(-16));const r=JSON.parse(d.update(ct.slice(0,-16),'','utf8')+d.final('utf8'));const v=Object.values(r)[0];const t=(v&&v.token)||'';if(!t){process.stdout.write('EMPTY');process.exit(0);}fetch('https://api.anthropic.com/api/oauth/profile',{headers:{'Authorization':'Bearer '+t,'anthropic-version':'2023-06-01','anthropic-beta':'oauth-2025-04-20'},signal:AbortSignal.timeout(6000)}).then(function(x){return x.ok?x.json():null}).then(function(j){if(j&&j.account&&j.account.email)process.stdout.write(j.account.email)}).catch(function(){});"
-        Set-Content -Path $tmp -Value $code -Encoding ASCII
-        $out = cmd /c "node ""$tmp"" 2>nul"
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        if ($out) { return ([string]($out -join '')).Trim() }
+        $bytes        = [Convert]::FromBase64String($blob)
+        $nonce        = $bytes[3..14]
+        $cipherAndTag = $bytes[15..($bytes.Length - 1)]
+        $cipherLen    = $cipherAndTag.Length - 16
+        $cipherText   = $cipherAndTag[0..($cipherLen - 1)]
+        $tag          = $cipherAndTag[$cipherLen..($cipherAndTag.Length - 1)]
+        $plainBytes   = [BCryptAesGcm]::Decrypt($key, $nonce, $cipherText, $tag)
+        $plainText    = [System.Text.Encoding]::UTF8.GetString($plainBytes)
+        $entry        = ($plainText | ConvertFrom-Json).PSObject.Properties.Value | Select-Object -First 1
+        $tok = $entry.token
+        if (-not $tok) { return 'EMPTY' }
+
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $client  = New-Object System.Net.Http.HttpClient($handler)
+        $client.Timeout = [TimeSpan]::FromSeconds(6)
+        $req = New-Object System.Net.Http.HttpRequestMessage('GET', 'https://api.anthropic.com/api/oauth/profile')
+        $req.Headers.Add('Authorization', "Bearer $tok")
+        $req.Headers.Add('anthropic-version', '2023-06-01')
+        $req.Headers.Add('anthropic-beta', 'oauth-2025-04-20')
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+        if (-not $resp.IsSuccessStatusCode) { return $null }
+        $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $j = $body | ConvertFrom-Json
+        if ($j.account.email) { return $j.account.email }
     } catch {}
     return $null
 }
@@ -109,7 +199,7 @@ if ($detected) {
     $ans = Read-Host "Detected logged-in account: $detected - save this one? [Y/n]"
     if ($ans -notmatch '^(n|no)$') { $email = $detected }
 } else {
-    Write-Host "Could not verify which account is logged in (token dead or node missing)." -ForegroundColor Yellow
+    Write-Host "Could not verify which account is logged in (token dead or network unreachable)." -ForegroundColor Yellow
     Write-Host "If the app shows a sign-in screen, log in first - saving now would snapshot a logged-out session." -ForegroundColor Yellow
 }
 if (-not $email) {
