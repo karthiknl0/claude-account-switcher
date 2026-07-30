@@ -8,7 +8,6 @@
 
 $store          = Join-Path $env:USERPROFILE '.claude-accounts'
 $RawBase        = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
-$SessionFolders = @('Network', 'Local Storage', 'IndexedDB', 'Session Storage')
 
 # -- Update check (best-effort, cached once per day) ---------------------------
 function Test-ForUpdate {
@@ -72,13 +71,14 @@ function Start-Claude {
     return $false
 }
 
-function Copy-Session($srcRoot, $dstRoot) {
-    foreach ($f in $SessionFolders) {
-        $src = Join-Path $srcRoot $f
-        if (-not (Test-Path $src)) { continue }
-        $dst = Join-Path $dstRoot $f
-        robocopy $src $dst /MIR /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
-    }
+function Copy-ClaudeProfile($source, $destination) {
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    robocopy $source $destination /MIR /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+    if ($LASTEXITCODE -gt 7) { return $false }
+
+    Get-ChildItem $destination -Force -Filter 'Singleton*' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    return $true
 }
 
 # -- Usage display -------------------------------------------------------------
@@ -262,11 +262,23 @@ if (-not $accounts) {
 }
 
 $list = @()
+$legacyCount = 0
 foreach ($a in $accounts) {
     try { $m = Get-Content (Join-Path $a.FullName 'meta.json') -Raw | ConvertFrom-Json } catch { continue }
-    $tcFile = Join-Path $a.FullName 'tokenCache.txt'
-    $tc     = if (Test-Path $tcFile) { (Get-Content $tcFile -Raw).Trim() } else { $null }
-    $list += [pscustomobject]@{ Email = $m.email; Dir = $a.FullName; Token = $tc }
+    $profile = Join-Path $a.FullName 'profile'
+    if (-not (Test-Path $profile)) { $legacyCount++; continue }
+    $tc = $null
+    try { $tc = (Read-FileShared (Join-Path $profile 'config.json') | ConvertFrom-Json).'oauth:tokenCache' } catch {}
+    $list += [pscustomobject]@{ Email = $m.email; Dir = $a.FullName; Profile = $profile; Token = $tc }
+}
+if (-not $list) {
+    if ($legacyCount) {
+        Write-Host "Your saved desktop accounts use the retired partial-session format." -ForegroundColor Yellow
+        Write-Host "Sign in to each account once, then run claude-add-account to create complete-profile snapshots." -ForegroundColor Yellow
+    } else {
+        Write-Host "No usable Claude accounts were found. Run claude-add-account after signing in." -ForegroundColor Yellow
+    }
+    Start-Sleep -Seconds 4; return
 }
 
 # -- Display picker ------------------------------------------------------------
@@ -312,12 +324,6 @@ if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $list.Count)
     Write-Host "Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 2; return
 }
 $chosen      = $list[[int]$pick - 1]
-$chosenSess  = Join-Path $chosen.Dir 'session'
-if (-not (Test-Path $chosenSess)) {
-    Write-Host "Saved session for $($chosen.Email) is missing - re-add it with claude-add-account." -ForegroundColor Red
-    Start-Sleep -Seconds 3; return
-}
-
 # -- Perform the swap ----------------------------------------------------------
 $root = Get-SessionRoot
 if (-not $root) { Write-Host "Claude app data not found." -ForegroundColor Red; Start-Sleep -Seconds 2; return }
@@ -329,54 +335,35 @@ if (-not (Stop-Claude $root)) {
     Start-Sleep -Seconds 3; return
 }
 
-# Back up the current live session so a bad swap is recoverable.
+# Back up the complete live profile so a bad swap is recoverable.
 $backup = Join-Path $store ('.backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-Write-Host "Backing up current session..." -ForegroundColor DarkGray
-Copy-Session $root $backup
+Write-Host "Backing up current profile..." -ForegroundColor DarkGray
+if (-not (Copy-ClaudeProfile $root (Join-Path $backup 'profile'))) {
+    Write-Host "Could not back up the current profile. Refusing to switch." -ForegroundColor Red
+    Start-Claude
+    Start-Sleep -Seconds 3; return
+}
 
-# Keep only the most recent backup (delete previous ones) - sessions are large.
+# Keep only the most recent backup (complete profiles are large).
 Get-ChildItem $store -Directory -Filter '.backup-*' -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -Skip 1 |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-# Sync-back: the app rotates its session tokens/cookies while it runs, so the
-# snapshot taken at claude-add time goes stale and restoring it later logs that
-# account out. Write the LIVE session back into the saved folder of the account
-# it belongs to before swapping away from it (same fix as claude-code-switch).
+# Sync the entire live profile back before loading another account. This keeps
+# every authentication component consistent as Claude changes its storage.
 if ($currentAcct) {
-    Write-Host "Refreshing saved session for $($currentAcct.Email)..." -ForegroundColor DarkGray
-    Copy-Session $root (Join-Path $currentAcct.Dir 'session')
-    try {
-        $liveTc = (Read-FileShared (Join-Path $root 'config.json') | ConvertFrom-Json).'oauth:tokenCache'
-        if ($liveTc) {
-            [System.IO.File]::WriteAllText((Join-Path $currentAcct.Dir 'tokenCache.txt'), $liveTc,
-                (New-Object System.Text.UTF8Encoding($false)))
-        }
-    } catch {}
+    Write-Host "Refreshing saved profile for $($currentAcct.Email)..." -ForegroundColor DarkGray
+    if (-not (Copy-ClaudeProfile $root $currentAcct.Profile)) {
+        Write-Host "Could not refresh the current profile. Refusing to switch." -ForegroundColor Red
+        Start-Claude
+        Start-Sleep -Seconds 3; return
+    }
 }
 
-Write-Host "Loading session for $($chosen.Email)..." -ForegroundColor Cyan
-Copy-Session $chosenSess $root
-
-# Also restore the account's oauth:tokenCache into config.json (the identity the
-# app displays). Written WITHOUT a BOM - a BOM makes the app reset its settings.
-$tcFile = Join-Path $chosen.Dir 'tokenCache.txt'
-if (Test-Path $tcFile) {
-    $tc  = (Get-Content $tcFile -Raw).Trim()
-    $cfg = Join-Path $root 'config.json'
-    if ($tc -and (Test-Path $cfg)) {
-        try {
-            $raw = Get-Content $cfg -Raw
-            $kv  = '"oauth:tokenCache": "' + $tc + '"'
-            $m   = [Regex]::Match($raw, '"oauth:tokenCache"\s*:\s*"[^"]*"')
-            if ($m.Success) {
-                $raw = $raw.Substring(0, $m.Index) + $kv + $raw.Substring($m.Index + $m.Length)
-            } else {
-                $raw = [Regex]::Replace($raw, '\}\s*$', (', ' + $kv + "`n}"))
-            }
-            [System.IO.File]::WriteAllText($cfg, $raw, (New-Object System.Text.UTF8Encoding($false)))
-        } catch {}
-    }
+Write-Host "Loading complete profile for $($chosen.Email)..." -ForegroundColor Cyan
+if (-not (Copy-ClaudeProfile $chosen.Profile $root)) {
+    Write-Host "Could not load the selected profile. Restore the backup at $backup if needed." -ForegroundColor Red
+    Start-Sleep -Seconds 3; return
 }
 
 # Remember which saved account the live session now belongs to, so the next

@@ -1,15 +1,15 @@
 ﻿# Snapshot the Claude desktop account that is CURRENTLY logged in, so it can be
-# switched to later. The Claude desktop app is an Electron web app: its login
-# lives in the browser session (cookies + Local Storage + IndexedDB), not in a
-# single token file. So we copy those session folders wholesale.
+# switched to later. Claude's desktop authentication spans its whole Electron
+# profile, not just cookies. Snapshotting only selected folders creates a mixed
+# profile after a restore and can trigger server-side reauthentication. Save and
+# restore the complete closed profile instead.
 #
 # Run from a NORMAL PowerShell window. THIS CLOSES THE CLAUDE APP.
 
 $store          = Join-Path $env:USERPROFILE '.claude-accounts'
-$SessionFolders = @('Network', 'Local Storage', 'IndexedDB', 'Session Storage')
 
 Write-Host ""
-Write-Host "=== Add Claude account (session snapshot) ===" -ForegroundColor Cyan
+Write-Host "=== Add Claude account (complete profile snapshot) ===" -ForegroundColor Cyan
 Write-Host "1. Log into the account you want to save in the Claude desktop app." -ForegroundColor DarkGray
 Write-Host "2. Then run this - it CLOSES Claude to copy its session, then reopens it." -ForegroundColor DarkGray
 Write-Host ""
@@ -54,6 +54,24 @@ function Stop-Claude($root) {
 function Start-Claude {
     $a = Get-StartApps | Where-Object { $_.Name -match 'claude' } | Select-Object -First 1
     if ($a) { Start-Process "shell:AppsFolder\$($a.AppID)" }
+}
+
+function Copy-ClaudeProfile($source, $destination) {
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    robocopy $source $destination /MIR /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+    if ($LASTEXITCODE -gt 7) { return $false }
+
+    # These are process-instance artifacts, never account state. Leaving one in
+    # a restored profile can prevent Electron from starting cleanly.
+    Get-ChildItem $destination -Force -Filter 'Singleton*' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
+function Clear-ClaudeProfile($root) {
+    # The root is the exact app-data directory resolved above, never a parent.
+    Get-ChildItem $root -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # AES-256-GCM decrypt of the app's tokenCache via bcrypt.dll (Windows' native
@@ -220,29 +238,16 @@ if (-not (Stop-Claude $root)) {
 
 $safe        = ($email -replace '[^\w.@+-]', '_')
 $dest        = Join-Path $store $safe
-$sessionDest = Join-Path $dest 'session'
-New-Item -ItemType Directory -Force -Path $sessionDest | Out-Null
+$profileDest = Join-Path $dest 'profile'
 
-Write-Host "Saving session for $email ..." -ForegroundColor Cyan
-foreach ($f in $SessionFolders) {
-    $src = Join-Path $root $f
-    if (-not (Test-Path $src)) { continue }
-    $dst = Join-Path $sessionDest $f
-    robocopy $src $dst /MIR /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
+Write-Host "Saving complete profile for $email ..." -ForegroundColor Cyan
+if (-not (Copy-ClaudeProfile $root $profileDest)) {
+    Write-Host "Could not save the complete Claude profile. No account was changed." -ForegroundColor Red
+    Start-Claude
+    Start-Sleep -Seconds 3; return
 }
 
-# Also capture config.json's oauth:tokenCache - the desktop app reads THIS for
-# the account identity/plan it displays, independent of the web cookies. Both
-# must be swapped together for the switch to take effect.
-$cfgFile = Join-Path $root 'config.json'
-if (Test-Path $cfgFile) {
-    try {
-        $tc = (Get-Content $cfgFile -Raw | ConvertFrom-Json).'oauth:tokenCache'
-        if ($tc) { Set-Content -Path (Join-Path $dest 'tokenCache.txt') -Value $tc -Encoding ASCII -NoNewline }
-    } catch {}
-}
-
-[ordered]@{ email = $email; savedAt = (Get-Date -Format o); sourceRoot = $root } |
+[ordered]@{ email = $email; savedAt = (Get-Date -Format o); sourceRoot = $root; profileFormat = 2 } |
     ConvertTo-Json | Set-Content -Path (Join-Path $dest 'meta.json') -Encoding UTF8
 
 # Mark this account as the one the live session belongs to, so claude-switch
@@ -257,29 +262,18 @@ Write-Host ""
 Write-Host "Saved account: $email" -ForegroundColor Green
 Write-Host ""
 
-# Offer to set up the NEXT account. We clear the LOCAL session (delete the
-# session folders + blank the token cache) instead of using the app's "Log out"
+# Offer to set up the NEXT account. We clear the LOCAL profile instead of using
+# the app's "Log out"
 # - logging out revokes the session server-side, which would kill the snapshot
 # we just saved. Clearing locally leaves the saved account valid to switch to.
 $more = Read-Host "Add ANOTHER account now? (clears local login WITHOUT logging out, shows sign-in) [y/N]"
 if ($more -match '^(y|yes)$') {
-    Write-Host "Clearing local session (not logging out $email)..." -ForegroundColor Cyan
+    Write-Host "Clearing local profile (not logging out $email)..." -ForegroundColor Cyan
     # The live session is about to belong to a different (not yet saved)
     # account - drop the marker so claude-switch doesn't sync the new login
     # back into this account's snapshot.
     Remove-Item (Join-Path $store '.current') -Force -ErrorAction SilentlyContinue
-    foreach ($f in $SessionFolders) {
-        $p = Join-Path $root $f
-        if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-    $cfgFile = Join-Path $root 'config.json'
-    if (Test-Path $cfgFile) {
-        try {
-            $raw = Get-Content $cfgFile -Raw
-            $raw = [Regex]::Replace($raw, '"oauth:tokenCache"\s*:\s*"[^"]*"', '"oauth:tokenCache": ""')
-            [System.IO.File]::WriteAllText($cfgFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
-        } catch {}
-    }
+    Clear-ClaudeProfile $root
     Start-Claude
     Write-Host ""
     Write-Host "Claude is reopening at a SIGN-IN screen." -ForegroundColor Green

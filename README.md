@@ -180,17 +180,22 @@ The Claude desktop app is an Electron app — your login is a **browser session*
 browser. There is no single token file to swap, so the switcher works at the
 session level:
 
-- `claude-add-account` closes Claude and snapshots the live session
-  (`Network`, `Local Storage`, `IndexedDB`, `Session Storage`) into
-  `~/.claude-accounts/<email>/session/`.
-- `claude-switch-account` closes Claude, **backs up** the current session to
-  `~/.claude-accounts/.backup-<timestamp>/` (keeps the last 3), copies in the
-  chosen account's session, and restarts the app.
+- `claude-add-account` closes Claude and snapshots the complete app profile into
+  `~/.claude-accounts/<email>/profile/`.
+- `claude-switch-account` closes Claude, **backs up** the current profile to
+  `~/.claude-accounts/.backup-<timestamp>/profile/` (keeps the last backup),
+  restores the chosen complete profile, and restarts the app.
 
 It auto-detects the Store/MSIX app location, so it survives Claude updates.
 
 There is no live in-app switch — the menu is the "dropdown", and the app reflects
 whichever account's session is active after the restart.
+
+> **One-time migration:** versions before 3.7 saved only selected session
+> folders. Those snapshots are deliberately not restored because they can mix
+> authentication state and cause a sign-in warning. After updating, sign in to
+> each account once and run `claude-add-account` to create a complete-profile
+> snapshot.
 
 ---
 
@@ -222,6 +227,9 @@ Remove-Item -Recurse -Force ~/.claude-accounts
   another PC, and never commit it anywhere — it contains live login sessions.
 - If a switch ever leaves Claude in a weird state, your previous session is in
   `~/.claude-accounts/.backup-<timestamp>/`.
+- **Sign-in can still be required by Claude.** A server-enforced session expiry,
+  security check, or organization policy cannot be bypassed locally. This tool
+  prevents profile mixing; it does not override Anthropic's authentication rules.
 
 ## License
 
