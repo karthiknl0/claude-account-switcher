@@ -172,6 +172,17 @@ function Read-FileShared($path) {
     } catch { return $null }
 }
 
+function Get-TokenCacheBlob($root) {
+    try {
+        $cfg = Read-FileShared (Join-Path $root 'config.json') | ConvertFrom-Json
+        # Claude Desktop's V1 entry can be an empty placeholder. Prefer V2 but
+        # retain V1 compatibility for older desktop builds.
+        $blob = $cfg.'oauth:tokenCacheV2'
+        if (-not $blob) { $blob = $cfg.'oauth:tokenCache' }
+        return $blob
+    } catch { return $null }
+}
+
 function Get-AesKey($root) {
     try {
         $ls = Read-FileShared (Join-Path $root 'Local State')
@@ -268,7 +279,7 @@ foreach ($a in $accounts) {
     $profile = Join-Path $a.FullName 'profile'
     if (-not (Test-Path $profile)) { $legacyCount++; continue }
     $tc = $null
-    try { $tc = (Read-FileShared (Join-Path $profile 'config.json') | ConvertFrom-Json).'oauth:tokenCache' } catch {}
+    $tc = Get-TokenCacheBlob $profile
     $list += [pscustomobject]@{ Email = $m.email; Dir = $a.FullName; Profile = $profile; Token = $tc }
 }
 if (-not $list) {
@@ -289,9 +300,7 @@ Test-ForUpdate
 # Identify the current account (live config token matches a saved one) + fetch usage.
 $liveRoot   = Get-SessionRoot
 $liveToken  = $null
-if ($liveRoot) {
-    try { $liveToken = (Read-FileShared (Join-Path $liveRoot 'config.json') | ConvertFrom-Json).'oauth:tokenCache' } catch {}
-}
+if ($liveRoot) { $liveToken = Get-TokenCacheBlob $liveRoot }
 # The app rotates its session tokens while it runs, so the live token may no
 # longer match any saved snapshot. Fall back to the marker written on the last
 # switch to still know which saved account the live session belongs to.

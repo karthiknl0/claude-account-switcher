@@ -170,7 +170,11 @@ function Get-LoggedInEmail($root) {
         $key = [System.Security.Cryptography.ProtectedData]::Unprotect($b[5..($b.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
         $cfgRaw = $null
         try { $fs=[IO.File]::Open((Join-Path $root 'config.json'),'Open','Read','ReadWrite'); $r=New-Object IO.StreamReader($fs); $cfgRaw=$r.ReadToEnd(); $r.Close(); $fs.Close() } catch { return $null }
-        $blob = ($cfgRaw | ConvertFrom-Json).'oauth:tokenCache'
+        $cfg = $cfgRaw | ConvertFrom-Json
+        # Claude Desktop moved live credentials to V2. Prefer it, but retain
+        # V1 for older desktop builds.
+        $blob = $cfg.'oauth:tokenCacheV2'
+        if (-not $blob) { $blob = $cfg.'oauth:tokenCache' }
         if (-not $blob) { return 'EMPTY' }
         $bytes        = [Convert]::FromBase64String($blob)
         $nonce        = $bytes[3..14]

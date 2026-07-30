@@ -197,6 +197,9 @@ whichever account's session is active after the restart.
 > each account once and run `claude-add-account` to create a complete-profile
 > snapshot.
 
+> The desktop client changed its credential cache from V1 to V2 in 2026. This
+> version detects V2 first, with V1 compatibility for older Claude builds.
+
 ---
 
 ## Uninstall
