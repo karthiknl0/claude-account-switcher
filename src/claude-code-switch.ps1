@@ -98,4 +98,12 @@ if (-not (Get-AccountLogin $chosen).HasLogin) {
 }
 Write-Host "New 'claude' sessions now run as this account. Run 'claude --resume' to continue your work." -ForegroundColor Cyan
 Write-Host "(Sessions that are already open keep their own account - no need to close them.)" -ForegroundColor DarkGray
+if (-not ($active -and $chosen.dir -eq $active.dir)) {
+    Write-Host ""
+    Write-Host "Saving usage on the new account: it has to read the whole conversation once." -ForegroundColor Yellow
+    Write-Host "  - If Claude Code offers 'resume from summary', choose it." -ForegroundColor Gray
+    Write-Host "  - Or start a new session and ask it to continue from the previous one." -ForegroundColor Gray
+    Write-Host "  - Best: type /compact on the OLD account before its limit runs out" -ForegroundColor Gray
+    Write-Host "    ('claude-code-statusline on' shows when)." -ForegroundColor Gray
+}
 Start-Sleep -Seconds 1
