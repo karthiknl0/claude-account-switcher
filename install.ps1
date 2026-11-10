@@ -11,24 +11,34 @@
       - ~/.claude-tools/*.ps1 (desktop + Claude Code switchers)
       - claude-switch-account / claude-add-account / claude-code-switch /
         claude-code-add commands in your PowerShell profiles (5.1 and 7)
+      - a small `claude` wrapper function, so `claude` runs as the account
+        chosen with claude-code-switch
       - Desktop shortcuts
 
     Installs (macOS / Linux):
-      - ~/.claude-tools/claude-code-switch.ps1, claude-code-add.ps1
-      - claude-code-switch / claude-code-add / claude-switch-update functions in
-        your shell (~/.bashrc and ~/.zshrc), each invoking `pwsh`
+      - ~/.claude-tools/claude-code-*.ps1, cc-common.ps1
+      - claude-code-switch / claude-code-add / claude-switch-update functions
+        and the `claude` wrapper in your shell (~/.bashrc and ~/.zshrc)
       (The desktop-app switcher is Windows-only and is skipped.)
 
-    No npm required - it works directly on Claude's credentials.
+    No npm required.
+
+    To try an unreleased branch, set $env:CLAUDE_SWITCHER_REF to its name first
+    (and use that branch name in the URL above).
 #>
 
-$RawBase     = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
+$Ref = 'main'
+if ($env:CLAUDE_SWITCHER_REF) { $Ref = $env:CLAUDE_SWITCHER_REF }
+$RawBase     = "https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/$Ref"
+$MainRawBase = 'https://raw.githubusercontent.com/karthiknl0/claude-account-switcher/main'
 $ToolsDir    = Join-Path $HOME '.claude-tools'
 $SwitchPath  = Join-Path $ToolsDir 'claude-switch.ps1'
 $AddPath     = Join-Path $ToolsDir 'claude-add.ps1'
 $CcSwitchPath= Join-Path $ToolsDir 'claude-code-switch.ps1'
 $CcAddPath   = Join-Path $ToolsDir 'claude-code-add.ps1'
 $CcDoctorPath= Join-Path $ToolsDir 'claude-code-doctor.ps1'
+$CcCommonPath= Join-Path $ToolsDir 'cc-common.ps1'
+$DtCommonPath= Join-Path $ToolsDir 'desktop-common.ps1'
 $VersionPath = Join-Path $ToolsDir '.version'
 
 # -- Platform detection ($IsWindows etc. only exist on PowerShell Core/7+) -----
@@ -47,7 +57,9 @@ try {
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-switch.ps1" -OutFile $CcSwitchPath
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-add.ps1"    -OutFile $CcAddPath
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-doctor.ps1" -OutFile $CcDoctorPath
+    Invoke-RestMethod -Uri "$RawBase/src/cc-common.ps1"          -OutFile $CcCommonPath
     if ($PlatformWin) {
+        Invoke-RestMethod -Uri "$RawBase/src/desktop-common.ps1" -OutFile $DtCommonPath
         Invoke-RestMethod -Uri "$RawBase/src/claude-switch.ps1"  -OutFile $SwitchPath
         Invoke-RestMethod -Uri "$RawBase/src/claude-add.ps1"     -OutFile $AddPath
     }
@@ -77,23 +89,50 @@ if ($PlatformWin) {
     # definitions (lets us add/rename commands on update without leaving dupes).
     $beginMark = '# >>> claude-account-switcher >>>'
     $endMark   = '# <<< claude-account-switcher <<<'
-    $func = @"
-$beginMark
+    # Literal template (no PowerShell expansion) with __PLACEHOLDERS__ filled in below.
+    $func = @'
+__BEGIN__
 # Claude account switcher (managed by claude-account-switcher installer)
 # Desktop app (claude.ai chats):
-function claude-switch-account { & "$SwitchPath" }
-function claude-add-account    { & "$AddPath" }
+function claude-switch-account { & "__SWITCH__" }
+function claude-add-account    { & "__ADD__" }
 # Claude Code CLI (coding work / usage):
-function claude-code-switch    { & "$CcSwitchPath" }
-function claude-code-add       { & "$CcAddPath" }
-function claude-code-doctor    { & "$CcDoctorPath" }
+function claude-code-switch    { & "__CCSWITCH__" @args }
+function claude-code-add       { & "__CCADD__" }
+function claude-code-doctor    { & "__CCDOCTOR__" }
+# Runs the real `claude` as the account chosen with claude-code-switch. Each
+# account has its own Claude Code config folder; the choice is the one line in
+# ~/.claude-cc-accounts/.active ('default' = your normal ~/.claude folder).
+function claude {
+    $casCmd = @(Get-Command claude -CommandType ExternalScript, Application -ErrorAction SilentlyContinue)
+    if ($casCmd.Count -eq 0) { Write-Host "Claude Code ('claude') is not installed or not on PATH." -ForegroundColor Red; return }
+    $casExe = $casCmd[0].Path
+    $casOld = $env:CLAUDE_CONFIG_DIR
+    $casSet = $false
+    $casMarker = Join-Path (Join-Path $HOME '.claude-cc-accounts') '.active'
+    if (Test-Path $casMarker) {
+        $casDir = $null
+        try { $casDir = (Get-Content $casMarker -Raw).Trim() } catch {}
+        if ($casDir -and $casDir -ne 'default' -and (Test-Path $casDir)) { $env:CLAUDE_CONFIG_DIR = $casDir; $casSet = $true }
+    }
+    try {
+        if ($MyInvocation.ExpectingInput) { $input | & $casExe @args } else { & $casExe @args }
+    } finally {
+        if ($casSet) { $env:CLAUDE_CONFIG_DIR = $casOld }
+    }
+}
 function claude-switch-update {
     Write-Host "Updating Claude Account Switcher..." -ForegroundColor Cyan
-    irm $RawBase/install.ps1 | iex
+    Remove-Item Env:CLAUDE_SWITCHER_REF -ErrorAction SilentlyContinue
+    irm __RAW__/install.ps1 | iex
     Write-Host "Done. Open a new PowerShell window to load the updated commands." -ForegroundColor Green
 }
-$endMark
-"@
+__END__
+'@
+    $func = $func.Replace('__BEGIN__', $beginMark).Replace('__END__', $endMark)
+    $func = $func.Replace('__SWITCH__', $SwitchPath).Replace('__ADD__', $AddPath)
+    $func = $func.Replace('__CCSWITCH__', $CcSwitchPath).Replace('__CCADD__', $CcAddPath)
+    $func = $func.Replace('__CCDOCTOR__', $CcDoctorPath).Replace('__RAW__', $MainRawBase)
     foreach ($pf in $profiles) {
         $dir = Split-Path $pf
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -146,7 +185,8 @@ $endMark
         $sc.WindowStyle      = 1
         $sc.Save()
     }
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
+    # (-CommandType: the `claude` wrapper function above must not count as the CLI.)
+    if (Get-Command claude -CommandType ExternalScript, Application -ErrorAction SilentlyContinue) {
         New-ClaudeLaunchShortcut 'Claude Code.lnk'          ''           'Launch Claude Code (claude)'
         New-ClaudeLaunchShortcut 'Claude Code Resume.lnk'   '--resume'   'Resume a Claude Code session (claude --resume)'
         New-ClaudeLaunchShortcut 'Claude Code Continue.lnk' '--continue' 'Continue the last Claude Code session (claude --continue)'
@@ -164,11 +204,14 @@ $endMark
     Write-Host "    claude-switch-account   switch (also on the Desktop shortcut)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  CLAUDE CODE CLI (coding work + usage):" -ForegroundColor Gray
-    Write-Host "    claude-code-add         save each account (after /login in Claude Code)" -ForegroundColor Gray
+    Write-Host "    claude-code-add         save each account (signs each one in, once)" -ForegroundColor Gray
     Write-Host "    claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
-    Write-Host "    claude-code-doctor      check setup (platform, credentials, accounts)" -ForegroundColor Gray
+    Write-Host "    claude-code-doctor      check setup (both switchers: logins, accounts, folders)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  claude-switch-update      update to the latest version" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Updating from 3.x? Run claude-code-add and claude-add-account once -" -ForegroundColor Yellow
+    Write-Host "  accounts are stored differently now (see the README, 'Upgrading from 3.x')." -ForegroundColor Yellow
 }
 else {
     # ----------------------------------------------------------- macOS / Linux --
@@ -184,15 +227,35 @@ else {
 
     $beginMark = '# >>> claude-account-switcher >>>'
     $endMark   = '# <<< claude-account-switcher <<<'
-    $block = @"
-$beginMark
+    # Literal template (no PowerShell expansion) with __PLACEHOLDERS__ filled in below.
+    $block = @'
+__BEGIN__
 # Claude Code account switcher (managed by claude-account-switcher installer)
-claude-code-switch() { pwsh -NoProfile -File "$CcSwitchPath"; }
-claude-code-add()    { pwsh -NoProfile -File "$CcAddPath"; }
-claude-code-doctor() { pwsh -NoProfile -File "$CcDoctorPath"; }
-claude-switch-update() { pwsh -NoProfile -Command "irm $RawBase/install.ps1 | iex"; }
-$endMark
-"@
+claude-code-switch() { pwsh -NoProfile -File "__CCSWITCH__" "$@"; }
+claude-code-add()    { pwsh -NoProfile -File "__CCADD__"; }
+claude-code-doctor() { pwsh -NoProfile -File "__CCDOCTOR__"; }
+claude-switch-update() { CLAUDE_SWITCHER_REF= pwsh -NoProfile -Command "irm __RAW__/install.ps1 | iex"; }
+# Runs the real `claude` as the account chosen with claude-code-switch. Each
+# account has its own Claude Code config folder; the choice is the one line in
+# ~/.claude-cc-accounts/.active ('default' = your normal ~/.claude folder).
+unalias claude 2>/dev/null || true
+function claude {
+  local cas_dir="" cas_bin=""
+  [ -f "$HOME/.claude-cc-accounts/.active" ] && cas_dir="$(cat "$HOME/.claude-cc-accounts/.active" 2>/dev/null)"
+  cas_bin="$(whence -p claude 2>/dev/null || type -P claude 2>/dev/null)"
+  [ -z "$cas_bin" ] && [ -x "$HOME/.claude/local/claude" ] && cas_bin="$HOME/.claude/local/claude"
+  if [ -z "$cas_bin" ]; then echo "Claude Code ('claude') is not installed or not on PATH." >&2; return 127; fi
+  if [ -n "$cas_dir" ] && [ "$cas_dir" != "default" ] && [ -d "$cas_dir" ]; then
+    CLAUDE_CONFIG_DIR="$cas_dir" "$cas_bin" "$@"
+  else
+    "$cas_bin" "$@"
+  fi
+}
+__END__
+'@
+    $block = $block.Replace('__BEGIN__', $beginMark).Replace('__END__', $endMark)
+    $block = $block.Replace('__CCSWITCH__', $CcSwitchPath).Replace('__CCADD__', $CcAddPath)
+    $block = $block.Replace('__CCDOCTOR__', $CcDoctorPath).Replace('__RAW__', $MainRawBase)
 
     $rcFiles = @(
         (Join-Path $HOME '.bashrc'),
@@ -219,14 +282,16 @@ $endMark
     Write-Host "Done! Claude Code account switcher is installed." -ForegroundColor Green
     if ($PlatformMac) {
         Write-Host "Note: macOS stores the Claude Code login in the Keychain. The first time" -ForegroundColor DarkGray
-        Write-Host "the switcher reads/writes it, macOS may ask you to Allow access." -ForegroundColor DarkGray
+        Write-Host "the switcher reads it (to show usage), macOS may ask you to Allow access." -ForegroundColor DarkGray
     }
     Write-Host ""
     Write-Host ("Updated: " + ($touched -join ', ')) -ForegroundColor DarkGray
     Write-Host "Run 'source ~/.bashrc' (or ~/.zshrc), or open a new terminal, then:" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  claude-code-add         save each account (after /login in Claude Code)" -ForegroundColor Gray
+    Write-Host "  claude-code-add         save each account (signs each one in, once)" -ForegroundColor Gray
     Write-Host "  claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
-    Write-Host "  claude-code-doctor      check setup (platform, credentials, accounts)" -ForegroundColor Gray
+    Write-Host "  claude-code-doctor      check setup (logins, accounts, folders)" -ForegroundColor Gray
     Write-Host "  claude-switch-update    update to the latest version" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Updating from 3.x? Run claude-code-add once - accounts are stored differently now." -ForegroundColor Yellow
 }

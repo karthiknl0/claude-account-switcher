@@ -1,151 +1,139 @@
-# Save the Claude Code (CLI) account currently logged in, so it can be switched
-# to later. Claude Code stores its login as a flat OAuth token (like Codex's
-# auth.json), so this is a simple, safe snapshot.
+# Add a Claude Code (CLI) account to the switcher.
+#
+# v4: every account gets its OWN Claude Code config folder and signs in there
+# once. It then stays signed in (Claude Code keeps that login fresh by itself),
+# so switching never copies tokens around and can't log an account out.
+# See cc-common.ps1 for the full explanation.
+#
+#   - Your existing login (in the normal ~/.claude folder) is kept as the first
+#     account - nothing to redo for it.
+#   - Each further account gets ~/.claude-cc-accounts/<email>/ which SHARES your
+#     transcripts, settings, plugins and skills with the main folder.
 #
 # Cross-platform (Windows / Linux / macOS) - on Unix run with PowerShell (pwsh).
-# Windows + Linux read it from ~/.claude/.credentials.json; macOS reads it from
-# the login Keychain ("Claude Code-credentials") via the `security` CLI.
 
-# -- Platform detection ($IsMacOS etc. only exist on PowerShell Core/7+) -------
-$PlatformMac = $false
-if (Test-Path variable:IsMacOS) { $PlatformMac = $IsMacOS }
-
-$store = Join-Path $HOME '.claude-cc-accounts'
-$KeychainService = 'Claude Code-credentials'
-
-# --- Dynamic location resolution (works across machines / layouts) ------------
-# Honours CLAUDE_CONFIG_DIR and auto-detects the real .credentials.json and the
-# real .claude.json (the one that actually contains oauthAccount).
-$ConfigDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
-
-$credCandidates = @(
-    (Join-Path $ConfigDir '.credentials.json'),
-    (Join-Path (Join-Path $HOME '.claude') '.credentials.json')
-) | Select-Object -Unique
-$cred = ($credCandidates | Where-Object { Test-Path $_ } | Get-Item -EA SilentlyContinue |
-         Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
-if (-not $cred) { $cred = $credCandidates[0] }
-
-$cfgCandidates = @(
-    (Join-Path $HOME '.claude.json'),
-    (Join-Path $ConfigDir '.claude.json'),
-    (Join-Path (Join-Path $HOME '.claude') '.claude.json')
-) | Select-Object -Unique
-$cfg = $null
-foreach ($c in ($cfgCandidates | Where-Object { Test-Path $_ } | Get-Item -EA SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
-    try { if ((Get-Content $c.FullName -Raw) -match '"oauthAccount"') { $cfg = $c.FullName; break } } catch {}
-}
-if (-not $cfg) { $cfg = $cfgCandidates[0] }
-$credLabel = if ($PlatformMac) { 'the login Keychain' } else { '~/.claude/.credentials.json' }
-
-# Extract a top-level object value as RAW JSON text (brace-balanced, string-aware)
-# so oauthAccount is copied byte-for-byte (a ConvertTo-Json round-trip would
-# mangle its dates / nested fields).
-function Get-JsonObjRaw($text, $key) {
-    $m = [regex]::Match($text, '"' + [regex]::Escape($key) + '"\s*:\s*')
-    if (-not $m.Success) { return $null }
-    $i = $m.Index + $m.Length
-    if ($i -ge $text.Length -or $text[$i] -ne '{') { return $null }
-    $depth = 0; $inStr = $false; $esc = $false
-    for ($j = $i; $j -lt $text.Length; $j++) {
-        $ch = $text[$j]
-        if ($esc) { $esc = $false; continue }
-        if ($ch -eq '\') { $esc = $true; continue }
-        if ($ch -eq '"') { $inStr = -not $inStr; continue }
-        if ($inStr) { continue }
-        if ($ch -eq '{') { $depth++ }
-        elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { return $text.Substring($i, $j - $i + 1) } }
-    }
-    return $null
-}
-
-# -- Platform-aware live-credential access -------------------------------------
-function Get-LiveCredsRaw {
-    if ($PlatformMac) {
-        try {
-            $out = & security find-generic-password -s $KeychainService -w 2>$null
-            if ($LASTEXITCODE -eq 0 -and $out) { return ($out -join "`n") }
-        } catch {}
-        return $null
-    }
-    if (Test-Path $cred) { try { return (Get-Content $cred -Raw) } catch {} }
-    return $null
-}
-
-function Remove-LiveCreds {
-    if ($PlatformMac) {
-        & security delete-generic-password -s $KeychainService 2>$null | Out-Null
-        return
-    }
-    Remove-Item $cred -Force -ErrorAction SilentlyContinue
-}
+. (Join-Path $PSScriptRoot 'cc-common.ps1')
 
 Write-Host ""
 Write-Host "=== Add Claude Code account ===" -ForegroundColor Cyan
 
-$raw = Get-LiveCredsRaw
-if (-not $raw) {
-    Write-Host "Claude Code is not logged in (no credentials in $credLabel)." -ForegroundColor Red
-    Write-Host "Open Claude Code, run /login, then re-run this." -ForegroundColor Red
+if (-not (Get-ClaudeExe)) {
+    Write-Host "The 'claude' command was not found on PATH. Install Claude Code first, then re-run this." -ForegroundColor Red
     Start-Sleep -Seconds 3; return
 }
-try { $c = $raw | ConvertFrom-Json } catch {
-    Write-Host "Could not read the Claude Code credentials." -ForegroundColor Red
-    Start-Sleep -Seconds 2; return
-}
-if (-not $c.claudeAiOauth) {
-    Write-Host "No subscription login found in credentials (API-key setup?)." -ForegroundColor Red
-    Start-Sleep -Seconds 2; return
-}
 
-# Capture this account's display identity (oauthAccount) so a later switch can
-# update ~/.claude/.claude.json too - otherwise Claude Code's /status keeps
-# showing the previous account's email/org after switching. It also tells us the
-# email of the login we're about to snapshot, so we can catch a mistyped email
-# (saving login X under email Y makes two picker entries point at the SAME
-# account, and Y's real credentials are lost).
-$oauthAccountRaw = $null
-if (Test-Path $cfg) { try { $oauthAccountRaw = Get-JsonObjRaw (Get-Content $cfg -Raw) 'oauthAccount' } catch {} }
-$detected = $null
-if ($oauthAccountRaw) { try { $detected = ($oauthAccountRaw | ConvertFrom-Json).emailAddress } catch {} }
-
-if ($detected) {
-    $email = Read-Host "Email of the logged-in account [Enter = $detected]"
-    if ([string]::IsNullOrWhiteSpace($email)) { $email = $detected }
-} else {
-    $email = Read-Host "Email of the account currently logged into Claude Code"
-    if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+# -- Registry (first run of v4 creates it) -------------------------------------
+$reg = Read-Registry
+$firstRun = $false
+if (-not $reg) {
+    $firstRun = $true
+    $reg = [pscustomobject]@{ mainDir = (Get-DefaultConfigDir); accounts = @() }
 }
-if ($detected -and $email -ne $detected) {
+$mainAcct = [pscustomobject]@{ email = $null; dir = $reg.mainDir; isDefault = $true }
+
+$legacy = @(Get-LegacyEmails)
+if ($firstRun -and $legacy.Count -gt 0) {
     Write-Host ""
-    Write-Host "Warning: Claude Code says the CURRENT login is $detected, not $email." -ForegroundColor Yellow
-    Write-Host "Saving this login under $email would overwrite that account's saved" -ForegroundColor Yellow
-    Write-Host "credentials with $detected's (both entries would then be the same account)." -ForegroundColor Yellow
-    Write-Host "If you meant to add $email, run /login as $email first, then re-run this." -ForegroundColor Yellow
-    $go = Read-Host "Save anyway as $email? [y/N]"
-    if ($go -notmatch '^(y|yes)$') { Write-Host "Cancelled." -ForegroundColor Yellow; Start-Sleep -Seconds 2; return }
+    Write-Host "This version stores accounts differently (one sign-in folder per account," -ForegroundColor Yellow
+    Write-Host "instead of swapping saved tokens, which Claude Code now invalidates)." -ForegroundColor Yellow
+    Write-Host "Accounts saved by the old version need ONE more sign-in each:" -ForegroundColor Yellow
+    foreach ($e in $legacy) { Write-Host "      - $e" -ForegroundColor Gray }
 }
 
-New-Item -ItemType Directory -Force -Path $store | Out-Null
-$safe = ($email -replace '[^\w.@+-]', '_')
-$file = Join-Path $store "$safe.json"
-
-$entry = [ordered]@{ email = $email; savedAt = (Get-Date -Format o); credentials = $c }
-if ($oauthAccountRaw) { $entry.oauthAccountRaw = $oauthAccountRaw }
-$entry | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
-
-Write-Host ""
-Write-Host "Saved Claude Code account: $email" -ForegroundColor Green
-Write-Host ""
-
-# Offer to set up the NEXT account. Clearing the LOCAL credentials does NOT call
-# the logout API, so the account we just saved stays valid.
-$more = Read-Host "Add ANOTHER account now? (clears local login WITHOUT logging out) [y/N]"
-if ($more -match '^(y|yes)$') {
-    Remove-LiveCreds
+# -- Keep the login that is already in the main folder as an account -----------
+$defaultAcct = @($reg.accounts) | Where-Object { $_.isDefault } | Select-Object -First 1
+$mainLogin   = Get-AccountLogin $mainAcct
+if (-not $defaultAcct -and $mainLogin.HasLogin) {
     Write-Host ""
-    Write-Host "Local Claude Code login cleared (not revoked)." -ForegroundColor Green
-    Write-Host "In Claude Code: run /login as the NEXT account, then run 'claude-code-add' again." -ForegroundColor Green
-    Write-Host "(If a Claude Code session is open, restart it so it sees the cleared login.)" -ForegroundColor DarkGray
+    Write-Host "Checking the account you're signed in to now..." -ForegroundColor DarkGray
+    $st    = Get-AuthStatus $mainAcct
+    $email = Get-AccountEmail $mainAcct $st
+    if (-not $email) {
+        $email = Read-Host "Email of the account Claude Code is signed in to right now"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($email)) {
+        $email = $email.Trim()
+        # The same email may already be saved in its own folder - the main
+        # folder's copy then simply becomes that account's home.
+        $reg.accounts = @(@($reg.accounts) | Where-Object { $_.email -ne $email })
+        $defaultAcct  = [pscustomobject]@{ email = $email; dir = $reg.mainDir; isDefault = $true }
+        $reg.accounts = @($defaultAcct) + @($reg.accounts)
+        Save-Registry $reg
+        if (-not (Test-Path $CcActive)) { Set-ActiveAccount $defaultAcct }
+        Write-Host "Saved your current login: $email  (main Claude Code folder - no sign-in needed)" -ForegroundColor Green
+        if ($st -and $st.loggedIn -eq $false) {
+            Write-Host "Note: Claude Code reports this login as expired - run 'claude' and /login once to renew it." -ForegroundColor Yellow
+        }
+    }
+    $more = Read-Host "Add ANOTHER account now? [y/N]"
+    if ($more -notmatch '^(y|yes)$') { Start-Sleep -Seconds 1; return }
 }
-Start-Sleep -Seconds 2
+
+# -- Add accounts (loop) -------------------------------------------------------
+while ($true) {
+    Write-Host ""
+    $email = Read-Host "Email of the account to add (Enter to cancel)"
+    if ([string]::IsNullOrWhiteSpace($email)) { Write-Host "Done." -ForegroundColor Yellow; break }
+    $email = $email.Trim()
+
+    $existing = @($reg.accounts) | Where-Object { $_.email -eq $email } | Select-Object -First 1
+    if ($existing) {
+        $acct = $existing
+        Write-Host "$email is already saved - signing in again will renew its login." -ForegroundColor DarkGray
+    } elseif (-not $defaultAcct -and -not $mainLogin.HasLogin) {
+        # Nobody is signed in to the main folder yet: the first account lives there.
+        $acct = [pscustomobject]@{ email = $email; dir = $reg.mainDir; isDefault = $true }
+    } else {
+        $dir = Join-Path $CcStore (Get-SafeName $email)
+        Initialize-AccountDir $dir $reg.mainDir
+        $acct = [pscustomobject]@{ email = $email; dir = $dir; isDefault = $false }
+    }
+
+    Write-Host ""
+    Write-Host "A sign-in page will open in your browser." -ForegroundColor Cyan
+    Write-Host "IMPORTANT: approve it as $email." -ForegroundColor Yellow
+    Write-Host "If the browser is signed in to claude.ai as a different account, sign out there" -ForegroundColor Yellow
+    Write-Host "first (or copy the link into a private/incognito window)." -ForegroundColor Yellow
+    Write-Host ""
+    Invoke-ClaudeFor $acct @('auth', 'login', '--email', $email)
+
+    $st = Get-AuthStatus $acct
+    $login = Get-AccountLogin $acct
+    $signedIn = ($st -and $st.loggedIn) -or (-not $st -and $login.HasLogin)
+    if (-not $signedIn) {
+        Write-Host ""
+        Write-Host "Sign-in was not completed, so $email was not saved. Run 'claude-code-add' to try again." -ForegroundColor Red
+        Start-Sleep -Seconds 3; break
+    }
+
+    $actual = Get-AccountEmail $acct $st
+    if ($actual -and $actual -ne $email) {
+        $clash = @($reg.accounts) | Where-Object { $_.email -eq $actual -and $_.dir -ne $acct.dir } | Select-Object -First 1
+        if ($clash) {
+            Write-Host ""
+            Write-Host "The browser signed in as $actual, which is already saved - not as $email." -ForegroundColor Red
+            Write-Host "Nothing was saved. Sign out of claude.ai in the browser (or use a private window)," -ForegroundColor Red
+            Write-Host "then run 'claude-code-add' again." -ForegroundColor Red
+            Start-Sleep -Seconds 4; break
+        }
+        Write-Host "Note: the sign-in was for $actual (not $email) - saving it under $actual." -ForegroundColor Yellow
+        $acct.email = $actual
+    }
+
+    $reg.accounts = @(@($reg.accounts) | Where-Object { $_.dir -ne $acct.dir -and $_.email -ne $acct.email }) + @($acct)
+    Save-Registry $reg
+    if ($acct.isDefault) { $defaultAcct = $acct; $mainLogin = Get-AccountLogin $mainAcct }
+    if (-not (Test-Path $CcActive)) { Set-ActiveAccount $acct }
+
+    Write-Host ""
+    Write-Host "Saved Claude Code account: $($acct.email)" -ForegroundColor Green
+    $more = Read-Host "Add ANOTHER account now? [y/N]"
+    if ($more -notmatch '^(y|yes)$') { break }
+}
+
+$count = @($reg.accounts).Count
+if ($count -gt 0) {
+    Write-Host ""
+    Write-Host "$count account(s) saved. Use 'claude-code-switch' to choose which one 'claude' runs as." -ForegroundColor Cyan
+}
+Start-Sleep -Seconds 1
