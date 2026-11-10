@@ -172,6 +172,32 @@ Check 'cleanup keeps the saved copy and its sign-in'   ((Get-ProfileState $snap)
 Check 'cleanup keeps the single backup'                (Test-Path (Join-Path $DtBackup 'profile'))
 if ($fails) { Write-Host $out }
 
+# 7. Code-tab sessions follow you to the other account.
+$sA = Join-Path $work 'sess\profA\claude-code-sessions\acct-a\org-a'
+$sB = Join-Path $work 'sess\profB\claude-code-sessions\acct-b\org-b'
+$sC = Join-Path $work 'sess\profC'
+Put (Join-Path $sA 'local_1111.json') '{"cliSessionId":"cli-1","title":"from A"}'
+Put (Join-Path $sA 'local_2222.json') '{"cliSessionId":"cli-2","title":"B deleted this one"}'
+Put (Join-Path $sA 'local_9999.json') '{"cliSessionId":"cli-3","title":"same conversation B already lists"}'
+Put (Join-Path $sA 'scheduled-tasks.json') '{"tasks":[]}'
+Put (Join-Path $sB 'local_3333.json') '{"cliSessionId":"cli-3","title":"B own","note":"keep-me"}'
+Put (Join-Path $sB 'deleted_2222') ''
+Put (Join-Path $sC 'config.json') '{}'
+$profA = Join-Path $work 'sess\profA'; $profB = Join-Path $work 'sess\profB'
+$n = Sync-CodeSessions @($profA, $sC, (Join-Path $work 'does-not-exist')) $profB
+Check 'session from the other account is added'            ($n -eq 1 -and (Test-Path (Join-Path $sB 'local_1111.json')))
+Check 'a session this account deleted stays deleted'       (-not (Test-Path (Join-Path $sB 'local_2222.json')))
+Check 'no duplicate entry for the same conversation'       (-not (Test-Path (Join-Path $sB 'local_9999.json')))
+Check 'the account''s own entries are left untouched'       ((Get-Content (Join-Path $sB 'local_3333.json') -Raw) -like '*keep-me*')
+Check 'only session entries are copied'                    (-not (Test-Path (Join-Path $sB 'scheduled-tasks.json')))
+Check 'running it again adds nothing'                      ((Sync-CodeSessions @($profA) $profB) -eq 0)
+Check 'an account that never used Code is skipped safely'  ((Sync-CodeSessions @($profA) $sC) -eq 0)
+Check 'the source account is not modified'                 (@(Get-ChildItem $sA -File).Count -eq 4)
+Put (Join-Path $DtStore '.no-session-share') ''
+Put (Join-Path $sA 'local_4444.json') '{"cliSessionId":"cli-4"}'
+Check 'sharing can be switched off'                        ((Sync-CodeSessions @($profA) $profB) -eq 0)
+Remove-Item (Join-Path $DtStore '.no-session-share') -Force
+
 Write-Host ""
 if ($fails) { Write-Host "$fails check(s) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "All desktop checks passed." -ForegroundColor Green

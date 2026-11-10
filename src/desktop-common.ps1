@@ -555,6 +555,95 @@ function Wait-LiveAccount($root, $expectEmail, $seconds) {
     return $res
 }
 
+# -- Sharing the Code-tab session list between accounts ------------------------
+# The desktop app lists its Claude Code ("Code" tab) sessions per account:
+#     <profile>\claude-code-sessions\<account-id>\<org-id>\local_<id>.json
+# Each file is a small index entry (title, folder, cliSessionId). The real
+# conversation is a transcript in ~/.claude/projects, which every account on
+# this PC already shares. So after a switch the work is all still on disk -
+# the other account's sidebar just doesn't list it.
+#
+# This copies the missing index entries from every other account into the
+# profile that is about to be loaded, so any account can open and continue any
+# session. Rules that keep it safe:
+#   * add-only: an entry the target already has is never changed or replaced
+#   * a session the target account deleted (deleted_* marker) stays deleted
+#   * one entry per conversation (no duplicates by cliSessionId)
+#   * only local_*.json is copied - never sign-in data, settings or tasks
+# Regular claude.ai chats are NOT local files (they live in each account on
+# Anthropic's servers) and cannot be shared this way.
+# Create the file ~/.claude-accounts/.no-session-share to turn this off.
+function Get-SessionDirs($profileRoot) {
+    $base = Join-Path $profileRoot 'claude-code-sessions'
+    $out = @()
+    if (-not (Test-Path $base)) { return $out }
+    foreach ($acct in @(Get-ChildItem $base -Directory -Force -ErrorAction SilentlyContinue)) {
+        foreach ($org in @(Get-ChildItem $acct.FullName -Directory -Force -ErrorAction SilentlyContinue)) { $out += $org.FullName }
+    }
+    return $out
+}
+
+function Get-SessionCliId($file) {
+    try { return [string]((Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).cliSessionId) } catch { return '' }
+}
+
+# -> number of session entries added to $targetProfile.
+function Sync-CodeSessions($sourceProfiles, $targetProfile) {
+    if (Test-Path (Join-Path $DtStore '.no-session-share')) { return 0 }
+    $added = 0
+    try {
+        $dests = @(Get-SessionDirs $targetProfile)
+        if ($dests.Count -eq 0) { return 0 }      # this account has not used the Code tab yet
+        # The account the profile belongs to, when the app recorded it.
+        try {
+            $acctId = [string]((Get-Content (Join-Path $targetProfile 'config.json') -Raw | ConvertFrom-Json).lastKnownAccountUuid)
+            if ($acctId) {
+                $own = @($dests | Where-Object { (Split-Path (Split-Path $_ -Parent) -Leaf) -eq $acctId })
+                if ($own.Count -gt 0) { $dests = $own }
+            }
+        } catch {}
+
+        $sources = @()
+        foreach ($p in @($sourceProfiles)) {
+            if ($p -and (Test-Path $p)) { $sources += @(Get-SessionDirs $p) }
+        }
+        foreach ($dest in $dests) {
+            $have    = @{}      # file names already listed
+            $haveCli = @{}      # conversations already listed
+            $deleted = @()      # names of deleted_* markers
+            foreach ($f in @(Get-ChildItem $dest -File -Force -ErrorAction SilentlyContinue)) {
+                if ($f.Name -like 'deleted_*') { $deleted += $f.Name; continue }
+                if ($f.Name -like 'local_*.json') {
+                    $have[$f.Name] = $true
+                    $c = Get-SessionCliId $f.FullName
+                    if ($c) { $haveCli[$c] = $true }
+                }
+            }
+            foreach ($src in $sources) {
+                if ($src -eq $dest) { continue }
+                foreach ($f in @(Get-ChildItem $src -File -Force -Filter 'local_*.json' -ErrorAction SilentlyContinue)) {
+                    if ($have.ContainsKey($f.Name)) { continue }
+                    $id  = $f.BaseName.Substring(6)                       # after "local_"
+                    $cli = Get-SessionCliId $f.FullName
+                    if ($cli -and $haveCli.ContainsKey($cli)) { continue }
+                    $gone = $false
+                    foreach ($d in $deleted) {
+                        if (($id -and $d -like "*$id*") -or ($cli -and $d -like "*$cli*")) { $gone = $true; break }
+                    }
+                    if ($gone) { continue }
+                    try {
+                        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dest $f.Name) -ErrorAction Stop
+                        $have[$f.Name] = $true
+                        if ($cli) { $haveCli[$cli] = $true }
+                        $added++
+                    } catch {}
+                }
+            }
+        }
+    } catch {}
+    return $added
+}
+
 # -- Saved accounts ------------------------------------------------------------
 function Get-SafeName($email) { return ($email -replace '[^\w.@+-]', '_') }
 
