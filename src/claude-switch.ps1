@@ -84,8 +84,13 @@ if ($chosen.State -eq 'MISSING' -or $chosen.State -eq 'EMPTY') {
     Write-Host "The saved snapshot for $($chosen.Email) has no sign-in in it, so it can't be restored." -ForegroundColor Red
     Write-Host "(Snapshots taken before the Claude app moved its data folder can be empty.)" -ForegroundColor Red
     Write-Host "Sign in to $($chosen.Email) in the Claude app, then run 'claude-add-account' to save it again." -ForegroundColor Yellow
-    Start-Sleep -Seconds 5; return
+    if ($chosen.State -eq 'MISSING') { Start-Sleep -Seconds 5; return }
+    # EMPTY can also mean a newer Claude keeps its sign-in under a name this
+    # tool can't read. The live profile is backed up first, so trying is safe.
+    $force = Read-Host "Or type RESTORE to try this snapshot anyway (Enter to cancel)"
+    if ($force -cne 'RESTORE') { return }
 }
+Set-RootCache $root
 
 if ($syncBack -and $currentAcct -and $chosen.Email -eq $currentAcct.Email) {
     # Restoring an account's older snapshot over its own live session would
@@ -155,11 +160,52 @@ if (-not (Copy-ClaudeProfile $chosen.Profile $root)) {
 Set-CurrentMarker $chosen.Email
 
 Write-Host "Reopening Claude..." -ForegroundColor Cyan
-if (Start-Claude) {
-    Write-Host ""
-    Write-Host "Done - Claude is reopening as $($chosen.Email)." -ForegroundColor Green
-    Write-Host "If it still shows the old account, fully quit Claude from the tray and reopen." -ForegroundColor DarkGray
-} else {
+if (-not (Start-Claude)) {
     Write-Host "Session swapped, but the Claude app wasn't found to relaunch - open it manually." -ForegroundColor Yellow
+    Start-Sleep -Seconds 3; return
 }
-Start-Sleep -Seconds 2
+
+# -- Check the result instead of assuming it worked ----------------------------
+Write-Host "Checking that Claude accepted the switch (up to 45 seconds)..." -ForegroundColor DarkGray
+$check = Wait-LiveAccount $root $chosen.Email 45
+# A snapshot whose sign-in this tool could not read in the first place can't
+# be judged "rejected" by the same reading.
+if ($check.Result -eq 'REJECTED' -and $chosen.State -ne 'SIGNEDIN') { $check.Result = 'UNSURE' }
+Write-Host ""
+if ($check.Result -eq 'OK') {
+    Write-Host "Done - Claude is signed in as $($chosen.Email) (verified)." -ForegroundColor Green
+    Start-Sleep -Seconds 2; return
+}
+if ($check.Result -eq 'UNSURE') {
+    Write-Host "Claude was switched to $($chosen.Email), but this could not be confirmed automatically." -ForegroundColor Yellow
+    Write-Host "Look at the app: if it shows $($chosen.Email), all is well. If it shows a sign-in screen," -ForegroundColor Yellow
+    Write-Host "sign in to that account and run 'claude-add-account' to save it again." -ForegroundColor Yellow
+    Start-Sleep -Seconds 4; return
+}
+
+if ($check.Result -eq 'OTHER') {
+    Write-Host "Claude reopened as $($check.Email), not $($chosen.Email)." -ForegroundColor Red
+    Set-CurrentMarker $check.Email
+} else {
+    Write-Host "Claude did not accept the saved sign-in for $($chosen.Email) (it expired or was signed out elsewhere)." -ForegroundColor Red
+    Remove-Item $DtCurrent -Force -ErrorAction SilentlyContinue
+}
+Write-Host "To fix that account: sign in to it in the Claude app, then run 'claude-add-account'." -ForegroundColor Yellow
+
+# Offer to put things back exactly as they were before this switch.
+$backupProfile = Join-Path $backup 'profile'
+if ($live.State -eq 'SIGNEDIN' -and (Test-Path $backupProfile)) {
+    $prev = if ($currentAcct) { $currentAcct.Email } elseif ($liveEmail) { $liveEmail } else { 'the previous account' }
+    $back = Read-Host "Go back to $prev now? [Y/n]"
+    if ($back -notmatch '^(n|no)$') {
+        Write-Host "Restoring the previous profile..." -ForegroundColor Cyan
+        if ((Stop-Claude $root) -and (Copy-ClaudeProfile $backupProfile $root)) {
+            if ($currentAcct) { Set-CurrentMarker $currentAcct.Email } else { Remove-Item $DtCurrent -Force -ErrorAction SilentlyContinue }
+            [void](Start-Claude)
+            Write-Host "Back on $prev." -ForegroundColor Green
+        } else {
+            Write-Host "Could not restore automatically. The backup is at $backup" -ForegroundColor Red
+        }
+    }
+}
+Start-Sleep -Seconds 3

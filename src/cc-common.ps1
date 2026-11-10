@@ -179,7 +179,15 @@ function Get-AuthStatus($acct) {
     try {
         $out = Invoke-ClaudeFor $acct @('auth', 'status') -Capture
         if (-not $out) { return $null }
-        return (($out -join "`n") | ConvertFrom-Json)
+        # Tolerate extra lines around the JSON (notices, warnings).
+        $text = ($out -join "`n")
+        $a = $text.IndexOf('{'); $b = $text.LastIndexOf('}')
+        if ($a -lt 0 -or $b -le $a) { return $null }
+        $o = $text.Substring($a, $b - $a + 1) | ConvertFrom-Json
+        # Only trust it if it has the field this tool relies on; otherwise the
+        # callers fall back to checking the stored login directly.
+        if ($null -eq $o.loggedIn) { return $null }
+        return $o
     } catch { return $null }
 }
 

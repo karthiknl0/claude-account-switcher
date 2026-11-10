@@ -63,9 +63,15 @@ function Test-ForUpdate {
 # Every folder the desktop app has used for its profile, newest layout first.
 function Get-DataRootCandidates {
     $roots = @()
+    # A folder the running app itself reported on an earlier add/switch. This
+    # is how a location that no rule below knows about (a future move) is
+    # still found after the app has been closed.
+    $cached = Get-RootCache
+    if ($cached) { $roots += $cached }
     $newBase = Join-Path $env:LOCALAPPDATA 'Claude-Data'
     if (Test-Path $newBase) {
-        Get-ChildItem $newBase -Directory -Filter 'claude_*' -ErrorAction SilentlyContinue |
+        # Every sub-folder, not just 'claude_*' - the name may change again.
+        Get-ChildItem $newBase -Directory -ErrorAction SilentlyContinue |
             ForEach-Object { $roots += $_.FullName }
     }
     $roots += (Join-Path $env:APPDATA 'Claude')
@@ -101,8 +107,51 @@ function Test-FileLocked($path) {
     try { $fs = [IO.File]::Open($path, 'Open', 'Read', 'None'); $fs.Close(); return $false } catch { return $true }
 }
 
+# Last live profile folder confirmed by an add/switch (see Get-DataRootCandidates).
+function Get-RootCache {
+    $f = Join-Path $DtStore '.root'
+    if (-not (Test-Path $f)) { return $null }
+    try { $v = (Get-Content $f -Raw).Trim() } catch { return $null }
+    if ($v -and (Test-Path $v)) { return $v }
+    return $null
+}
+
+function Set-RootCache($root) {
+    try {
+        New-Item -ItemType Directory -Force -Path $DtStore | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $DtStore '.root'), $root, $DtUtf8)
+    } catch {}
+}
+
+# Ask the RUNNING app where its profile is. Electron/Chromium passes
+# --user-data-dir=<folder> to its helper processes, so this keeps working even
+# if a future update moves the data somewhere this script has never heard of.
+# Only trusted when the folder really looks live (has a profile, is not marked
+# as abandoned, and its cookie store - if there is one - is held open).
+function Get-RunningDataRoot {
+    try {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'claude%'" -ErrorAction Stop)
+    } catch { return $null }
+    foreach ($p in $procs) {
+        $cl = [string]$p.CommandLine
+        if (-not $cl) { continue }
+        $m = [regex]::Match($cl, '--user-data-dir=(?:"([^"]+)"|(\S+))')
+        if (-not $m.Success) { continue }
+        $dir = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+        $dir = $dir.TrimEnd('\')
+        if (-not $dir -or -not (Test-Path $dir)) { continue }
+        if (-not (Test-RootHasProfile $dir) -or (Test-RootAbandoned $dir)) { continue }
+        $ck = Get-CookiesPath $dir
+        if ($ck -and -not (Test-FileLocked $ck)) { continue }
+        return $dir
+    }
+    return $null
+}
+
 # The profile folder the installed app is REALLY using right now.
 function Get-SessionRoot {
+    $running = Get-RunningDataRoot
+    if ($running) { return $running }
     $cands = @(Get-DataRootCandidates | Where-Object { Test-RootHasProfile $_ })
     if ($cands.Count -eq 0) { return $null }
     $current = @($cands | Where-Object { -not (Test-RootAbandoned $_) })
@@ -339,7 +388,16 @@ function Get-ProfileState($root) {
     $blobs = @($cfg.PSObject.Properties |
         Where-Object { $_.Name -like 'oauth:tokenCache*' -and $_.Value -is [string] -and $_.Value } |
         Sort-Object Name -Descending | ForEach-Object { $_.Value })
-    if (@($blobs).Count -eq 0) { $res.State = 'EMPTY'; return $res }
+    if (@($blobs).Count -eq 0) {
+        # No cache under a name this version knows. If the config still holds
+        # something sign-in related under ANOTHER name, a newer Claude build
+        # has probably renamed it - report "can't tell", not "signed out", so
+        # the tool keeps working (with a confirmation) instead of refusing.
+        $other = @($cfg.PSObject.Properties |
+            Where-Object { $_.Name -match 'oauth|token' -and $_.Name -notlike 'oauth:tokenCache*' -and $_.Value })
+        $res.State = if ($other.Count -gt 0) { 'UNKNOWN' } else { 'EMPTY' }
+        return $res
+    }
     $key = Get-AesKey $root
     if (-not $key) { $res.State = 'UNKNOWN'; return $res }
     $unreadable = $false
@@ -407,6 +465,35 @@ function Format-Resets($u) {
     } catch {}
     if ($parts.Count) { return ($parts -join '   |   ') }
     return $null
+}
+
+# After a switch: watch the restarted app and report who it is signed in as.
+#   Result: 'OK'       - verified signed in as $expectEmail
+#           'OTHER'    - signed in, but as a different account (Email is set)
+#           'REJECTED' - the app dropped the restored sign-in (shows a login screen)
+#           'UNSURE'   - could not be confirmed either way
+# A restored token is often expired, so the app is given time to renew it.
+function Wait-LiveAccount($root, $expectEmail, $seconds) {
+    $res = [pscustomobject]@{ Result = 'UNSURE'; Email = $null }
+    $deadline = (Get-Date).AddSeconds($seconds)
+    $emptySeen = 0
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $st = Get-ProfileState $root
+        if ($st.State -eq 'SIGNEDIN') {
+            $emptySeen = 0
+            $who = Get-TokenEmail $st.Token
+            if ($who) {
+                $res.Email = $who
+                if ($who -eq $expectEmail) { $res.Result = 'OK'; return $res }
+                $res.Result = 'OTHER'
+            }
+        } elseif ($st.State -eq 'EMPTY') {
+            $emptySeen++
+        }
+    }
+    if ($res.Result -eq 'UNSURE' -and $emptySeen -ge 3) { $res.Result = 'REJECTED' }
+    return $res
 }
 
 # -- Saved accounts ------------------------------------------------------------
