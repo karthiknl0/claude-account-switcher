@@ -157,6 +157,14 @@ if ($syncBack -and $currentAcct -and $currentAcct.Email -ne $chosen.Email) {
     }
 }
 
+# Make the Code-tab sessions of the other accounts show up in the account that
+# is about to be loaded (index entries only - see Sync-CodeSessions).
+$others  = @($root) + @($list | Where-Object { $_.Email -ne $chosen.Email } | ForEach-Object { $_.Profile })
+$carried = Sync-CodeSessions $others $chosen.Profile
+if ($carried -gt 0) {
+    Write-Host "Added $carried Code session(s) from your other accounts to $($chosen.Email)'s list." -ForegroundColor DarkGray
+}
+
 Write-Host "Loading complete profile for $($chosen.Email)..." -ForegroundColor Cyan
 if (-not (Copy-ClaudeProfile $chosen.Profile $root)) {
     Write-Host "Could not load the selected profile. Restore the backup at $backup if needed." -ForegroundColor Red

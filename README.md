@@ -174,6 +174,29 @@ claude --resume             # continue the same conversation on the new account
 
 ---
 
+## Continue your work on any account
+
+Your work is kept on your PC, not inside one account, so switching does not
+lose it:
+
+- **Claude Code (CLI):** all accounts share the same transcripts. Switch, then
+  `claude --resume`.
+- **Desktop app, Code tab:** the conversations are local files shared by all
+  accounts, but the app lists them per account - so after a switch the sidebar
+  looked empty. On every `claude-switch-account`, the switcher now adds the
+  other accounts' Code sessions to the list of the account you are switching
+  to. Open any of them and carry on. It only *adds* list entries: nothing an
+  account already has is changed, sessions you deleted stay deleted, and no
+  sign-in data is copied. An account that has never opened the Code tab gets
+  the list from its second switch onwards. To turn this off, create an empty
+  file `~/.claude-accounts/.no-session-share`.
+- **Desktop app, regular chats:** these cannot be shared. They are stored in
+  each account on Anthropic's servers, not on your PC, so another account can
+  never see them. To move such a chat, ask Claude for a summary and paste it
+  into a new chat on the other account.
+
+---
+
 ## Storage: one copy per account, nothing piles up
 
 - Each desktop account has **exactly one saved copy**
