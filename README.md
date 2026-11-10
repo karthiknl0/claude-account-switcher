@@ -174,6 +174,30 @@ claude --resume             # continue the same conversation on the new account
 
 ---
 
+## Built to survive Claude updates
+
+Claude changes often, so version 4.1 does not assume it knows where things are:
+
+- **It asks the running app** where its data folder is, and remembers the
+  answer - so another folder move is followed automatically.
+- **It checks every switch.** After the desktop app restarts, the switcher
+  confirms which account is really signed in. If Claude rejected the saved
+  sign-in, it says so and offers to put you back on the account you were on.
+- **It never refuses just because something was renamed.** If a newer Claude
+  stores its sign-in differently, you get a confirmation question instead of
+  a dead end, and `claude-code-add` can sign in inside Claude Code itself if
+  the quick sign-in command ever changes.
+- **It is tested automatically** on Windows (PowerShell 5.1 and 7), macOS and
+  Linux on every change, and **once a week against the newest Claude Code**.
+  If a new release breaks something the switcher relies on, that weekly check
+  fails and GitHub emails the repository owner.
+
+What no tool can do: keep an account signed in after Anthropic ends that
+session, or predict a complete redesign of the apps. In those cases the
+switcher tells you what happened and what to run - it does not silently fail.
+
+---
+
 ## Updating
 
 ```powershell

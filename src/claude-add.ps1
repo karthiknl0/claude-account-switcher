@@ -24,11 +24,20 @@ if (-not $root) {
 # Identify the account ACTUALLY logged in (from the app's own token cache), so
 # a snapshot is never saved under the wrong email or while logged out.
 $live = Get-ProfileState $root
-if ($live.State -eq 'EMPTY' -or $live.State -eq 'MISSING') {
+if ($live.State -eq 'MISSING') {
     Write-Host "Claude isn't logged into any account right now (no sign-in found in its profile)." -ForegroundColor Red
     Write-Host "Log in first, then run 'claude-add-account' again - saving now would snapshot a logged-out session that fails on restore." -ForegroundColor Red
     Start-Sleep -Seconds 4; return
 }
+if ($live.State -eq 'EMPTY') {
+    Write-Host "Claude doesn't look logged in right now (no sign-in found in its profile)." -ForegroundColor Red
+    Write-Host "If the app shows a sign-in screen: log in first, then run 'claude-add-account' again." -ForegroundColor Red
+    Write-Host "If the app IS open on your chats, a newer Claude version may keep its sign-in" -ForegroundColor Yellow
+    Write-Host "somewhere this tool doesn't know yet - you can still save the account." -ForegroundColor Yellow
+    $force = Read-Host "Type SAVE to save it anyway (or Enter to cancel)"
+    if ($force -cne 'SAVE') { Write-Host "Cancelled." -ForegroundColor Yellow; Start-Sleep -Seconds 2; return }
+}
+Set-RootCache $root
 $detected = $null
 if ($live.Token) { $detected = Get-TokenEmail $live.Token }
 

@@ -1,0 +1,69 @@
+name: CI
+
+# Runs on every change, and once a week on its own so that a new Claude
+# release that breaks the switcher is noticed even when nothing here changed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'   # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (PowerShell 5.1 + 7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check - Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/parse.ps1
+      - name: Syntax check - PowerShell 7
+        shell: pwsh
+        run: ./tests/parse.ps1
+      - name: Desktop switcher - PowerShell 7 (builds the look-alike profile)
+        shell: pwsh
+        run: ./tests/desktop.tests.ps1 -Fixture "$env:RUNNER_TEMP\casfx" -Build
+      - name: Desktop switcher - Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/desktop.tests.ps1 -Fixture "$env:RUNNER_TEMP\casfx"
+      - name: CLI switcher - PowerShell 7
+        shell: pwsh
+        run: ./tests/cli.tests.ps1
+      - name: CLI switcher - Windows PowerShell 5.1
+        shell: pwsh
+        run: ./tests/cli.tests.ps1 -Shell powershell
+
+  unix:
+    name: CLI switcher (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        shell: pwsh
+        run: ./tests/parse.ps1
+      - name: CLI switcher
+        shell: pwsh
+        run: ./tests/cli.tests.ps1
+
+  canary:
+    name: Newest Claude Code still compatible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the newest Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Check what the switcher relies on
+        shell: pwsh
+        run: ./tests/canary.ps1

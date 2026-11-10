@@ -101,6 +101,22 @@ while ($true) {
     $login = Get-AccountLogin $acct
     $signedIn = ($st -and $st.loggedIn) -or (-not $st -and $login.HasLogin)
     if (-not $signedIn) {
+        # Fallback that does not depend on the 'claude auth login' command
+        # (in case a future Claude Code renames or changes it): open Claude
+        # Code itself in this account's folder and sign in there.
+        Write-Host ""
+        Write-Host "The quick sign-in did not complete." -ForegroundColor Yellow
+        $alt = Read-Host "Open Claude Code for this account and sign in there instead? [Y/n]"
+        if ($alt -notmatch '^(n|no)$') {
+            Write-Host "Claude Code will open. Sign in as $email (type /login if it doesn't ask)," -ForegroundColor Cyan
+            Write-Host "then type /exit to come back here." -ForegroundColor Cyan
+            Invoke-ClaudeFor $acct @()
+            $st = Get-AuthStatus $acct
+            $login = Get-AccountLogin $acct
+            $signedIn = ($st -and $st.loggedIn) -or (-not $st -and $login.HasLogin)
+        }
+    }
+    if (-not $signedIn) {
         Write-Host ""
         Write-Host "Sign-in was not completed, so $email was not saved. Run 'claude-code-add' to try again." -ForegroundColor Red
         Start-Sleep -Seconds 3; break
