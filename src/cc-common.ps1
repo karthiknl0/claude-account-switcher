@@ -291,6 +291,96 @@ function Initialize-AccountDir($dir, $mainDir) {
     }
 }
 
+# -- Usage status line (settings.json) -----------------------------------------
+# The entry is added/removed by editing the JSON TEXT in place, so every other
+# byte of the user's settings stays exactly as it was.
+$CcStatusScript = 'claude-statusline.ps1'
+
+# The command Claude Code runs. On Windows it may be passed through Git Bash or
+# through "powershell -Command", which strips quotes - so the path is written
+# with forward slashes and, whenever possible, without spaces or quotes.
+function Get-StatusLineCommand {
+    $script = Join-Path $PSScriptRoot $CcStatusScript
+    if ($PlatformWin) {
+        $p = $script
+        if ($p -match '\s') {
+            try { $p = (New-Object -ComObject Scripting.FileSystemObject).GetFile($p).ShortPath } catch {}
+        }
+        $p = $p -replace '\\', '/'
+        if ($p -match '\s') { return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $p + '"' }
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -File ' + $p
+    }
+    return "pwsh -NoProfile -File '" + $script + "'"
+}
+
+# settings.json of the main folder and of every saved account's own folder
+# (on Windows an account folder may hold a copy instead of a link).
+function Get-SettingsFiles {
+    $reg  = Read-Registry
+    $main = if ($reg) { $reg.mainDir } else { Get-DefaultConfigDir }
+    $out  = @((Join-Path $main 'settings.json'))
+    if ($reg) {
+        foreach ($a in @($reg.accounts)) {
+            if (-not $a.isDefault -and (Test-Path $a.dir)) { $out += (Join-Path $a.dir 'settings.json') }
+        }
+    }
+    return @($out | Select-Object -Unique)
+}
+
+function Read-SettingsText($file) {
+    if (-not (Test-Path $file)) { return '' }
+    try { return [string](Get-Content $file -Raw) } catch { return '' }
+}
+
+# 'on' (ours), 'yours' (a different status line), 'off' (none)
+function Get-StatusLineState($file) {
+    $t = Read-SettingsText $file
+    if ($t -notmatch '"statusLine"\s*:') { return 'off' }
+    if ($t.Contains($CcStatusScript)) { return 'on' }
+    return 'yours'
+}
+
+function Write-SettingsChecked($file, $text) {
+    try { $null = $text | ConvertFrom-Json } catch { return $false }     # must still be valid JSON
+    try {
+        if (Test-Path $file) { Copy-Item -LiteralPath $file -Destination ($file + '.cas-backup') -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+        Write-TextNoBom $file $text
+        return $true
+    } catch { return $false }
+}
+
+function Disable-StatusLine($file) {
+    $state = Get-StatusLineState $file
+    if ($state -ne 'on') { return $state }
+    $new = Remove-JsonObjRaw (Read-SettingsText $file) 'statusLine'
+    if ($new -and (Write-SettingsChecked $file $new)) { return 'off' }
+    return 'error'
+}
+
+function Enable-StatusLine($file) {
+    $state = Get-StatusLineState $file
+    if ($state -eq 'yours') { return 'yours' }
+    $t = Read-SettingsText $file
+    if ($state -eq 'on') {                       # refresh ours (the path may have changed)
+        $t = Remove-JsonObjRaw $t 'statusLine'
+        if (-not $t) { return 'error' }
+    }
+    $cmd    = (Get-StatusLineCommand).Replace('\', '\\').Replace('"', '\"')
+    $member = '"statusLine": { "type": "command", "command": "' + $cmd + '" }'
+    if ($t.Trim() -eq '') {
+        $new = "{`n  $member`n}`n"
+    } else {
+        $i = $t.IndexOf('{')
+        if ($i -lt 0) { return 'error' }
+        $rest = $t.Substring($i + 1)
+        if ($rest.TrimStart().StartsWith('}')) { $new = $t.Substring(0, $i + 1) + "`n  $member`n" + $rest.TrimStart() }
+        else { $new = $t.Substring(0, $i + 1) + "`n  $member," + $rest }
+    }
+    if (Write-SettingsChecked $file $new) { return 'on' }
+    return 'error'
+}
+
 function Get-SafeName($email) { return ($email -replace '[^\w.@+-]', '_') }
 
 # Accounts saved by versions 3.x (token snapshots: <email>.json). They are no

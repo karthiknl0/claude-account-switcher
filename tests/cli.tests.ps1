@@ -126,6 +126,46 @@ Check 'cleanup: reminder for a not-yet-re-added account is kept'  (Test-Path (Jo
 Check 'cleanup: registry and logins are untouched'               ((Test-Path $reg) -and ((Get-Content (Join-Path $main '.credentials.json') -Raw) -eq $mainCredsBefore))
 if ($fails) { Write-Host $out }
 
+# 8. Usage status line: what it shows.
+function Run-StatusLine($json) {
+    $a = @('-NoProfile'); if ($Shell -eq 'powershell') { $a += @('-ExecutionPolicy', 'Bypass') }
+    $o = $json | & $Shell @a -File (Join-Path $src 'claude-statusline.ps1') 2>&1
+    return (($o | ForEach-Object { "$_" }) -join "`n")
+}
+[System.IO.File]::WriteAllText($act, 'default', $utf8)
+$calm = Run-StatusLine '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.4},"rate_limits":{"five_hour":{"used_percentage":20,"resets_at":4102444800},"seven_day":{"used_percentage":30}}}'
+Check 'status line: shows account, context and both limits' ($calm -like '*a@x.com*' -and $calm -like '*ctx 42%*' -and $calm -like '*5h 20%*' -and $calm -like '*7d 30%*')
+Check 'status line: no advice while there is headroom'      ($calm -notlike '*/compact*')
+$near = Run-StatusLine '{"model":{"display_name":"Opus"},"rate_limits":{"five_hour":{"used_percentage":91}}}'
+Check 'status line: says to /compact when the limit is close' ($near -like '*/compact*' -and $near -like '*claude-code-switch*' -and $near -like '*5h 91%*')
+Check 'status line: missing data does not break it'         ((Run-StatusLine '{"model":{"display_name":"Opus"}}') -like '*Opus*')
+Check 'status line: bad input prints nothing'               ((Run-StatusLine 'not json').Trim() -eq '')
+
+# 9. Usage status line: switching it on and off only touches its own entry.
+$settings = Join-Path $main 'settings.json'
+$out = Run-Script 'claude-code-statusline.ps1' @() @('on')
+$txt = Get-Content $settings -Raw
+$obj = $null; try { $obj = $txt | ConvertFrom-Json } catch {}
+Check 'statusline on: entry added, file still valid'        ($obj -and $obj.statusLine.type -eq 'command' -and $obj.statusLine.command -like '*claude-statusline.ps1*')
+Check 'statusline on: other settings kept'                  ($obj -and $obj.theme -eq 'dark')
+Check 'statusline on: command has no backslashes or quotes on Windows' ((-not $onWindows) -or ($obj.statusLine.command -notmatch '[\\"]'))
+Check 'statusline on: previous file kept as backup'         (Test-Path ($settings + '.cas-backup'))
+$out = Run-Script 'claude-code-statusline.ps1' @() @('on')
+Check 'statusline on twice: still exactly one entry'        (([regex]::Matches((Get-Content $settings -Raw), '"statusLine"')).Count -eq 1)
+if ($obj -and $obj.statusLine.command) {
+    $live = ('{"rate_limits":{"five_hour":{"used_percentage":88}}}' | & $(if ($onWindows) { 'powershell' } else { 'sh' }) $(if ($onWindows) { '-Command' } else { '-c' }) $obj.statusLine.command 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    Check 'statusline: the configured command really runs'  ($live -like '*5h 88%*')
+}
+$out = Run-Script 'claude-code-statusline.ps1' @() @('off')
+$txt = Get-Content $settings -Raw
+Check 'statusline off: entry removed, other settings kept'  ($txt -notmatch 'statusLine' -and ($txt | ConvertFrom-Json).theme -eq 'dark')
+[System.IO.File]::WriteAllText($settings, '{"theme":"dark","statusLine":{"type":"command","command":"my-own-thing"}}', $utf8)
+$out = Run-Script 'claude-code-statusline.ps1' @() @('on')
+Check 'statusline on: your own status line is not replaced' ((Get-Content $settings -Raw) -like '*my-own-thing*' -and (Get-Content $settings -Raw) -notlike '*claude-statusline.ps1*')
+$out = Run-Script 'claude-code-statusline.ps1' @() @('off')
+Check 'statusline off: your own status line is not removed' ((Get-Content $settings -Raw) -like '*my-own-thing*')
+if ($fails) { Write-Host $out }
+
 try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
 Write-Host ""
 if ($fails) { Write-Host "$fails check(s) FAILED" -ForegroundColor Red; exit 1 }

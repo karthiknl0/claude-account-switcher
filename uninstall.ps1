@@ -18,6 +18,19 @@ Write-Host "Removing Claude Account Switcher..." -ForegroundColor Cyan
 $PlatformWin = $true
 if (Test-Path variable:IsWindows) { $PlatformWin = $IsWindows }
 
+# 0. Our status line entry in Claude Code's settings (it points at a script
+#    that is about to be deleted). Uses the still-installed helper; a status
+#    line you set up yourself is not touched.
+$cc = Join-Path (Join-Path $HOME '.claude-tools') 'cc-common.ps1'
+if (Test-Path $cc) {
+    try {
+        . $cc
+        foreach ($f in @(Get-SettingsFiles)) {
+            if ((Get-StatusLineState $f) -eq 'on' -and (Disable-StatusLine $f) -eq 'off') { Write-Host " - removed the usage status line from $f" }
+        }
+    } catch {}
+}
+
 # 1. Tools dir
 $ToolsDir = Join-Path $HOME '.claude-tools'
 if (Test-Path $ToolsDir) { Remove-Item -Recurse -Force $ToolsDir; Write-Host " - removed $ToolsDir" }

@@ -86,7 +86,7 @@ This installs:
 - Scripts in `~/.claude-tools/`
 - Commands: `claude-add-account`, `claude-switch-account` (desktop app);
   `claude-code-add`, `claude-code-switch`, `claude-code-doctor` (Claude Code
-  CLI); `claude-switch-cleanup`, `claude-switch-update`
+  CLI); `claude-code-statusline`, `claude-switch-cleanup`, `claude-switch-update`
 - A small **`claude` wrapper** in your shell profile, so the `claude` command
   runs as the account you picked with `claude-code-switch`
 - Desktop shortcuts (Windows)
@@ -194,6 +194,42 @@ lose it:
   each account on Anthropic's servers, not on your PC, so another account can
   never see them. To move such a chat, ask Claude for a summary and paste it
   into a new chat on the other account.
+
+---
+
+## Don't burn the new account's limit when you switch
+
+When you continue a session on another account, that account must read the
+whole conversation once at full price - a long session can take a big bite out
+of its 5-hour limit. Three ways to avoid that, best first:
+
+1. **Compact on the old account before its limit runs out.** There the
+   conversation is still cached, so `/compact` is cheap - and the new account
+   then only reads a short summary. Turn on the usage status line so you know
+   when:
+
+   ```powershell
+   claude-code-statusline on
+   ```
+
+   ```
+   you@example.com | Opus | ctx 42% | 5h 61% (resets 21:49) | 7d 30%
+   ```
+
+   and when the limit gets close:
+
+   ```
+   >> 5h limit close: type /compact soon, then claude-code-switch to carry on cheaply | you@example.com | ...
+   ```
+
+   It shows the account the session runs as, how full the context is, and the
+   5-hour / weekly usage. From 85% it tells you to compact. It adds one entry
+   to Claude Code's `settings.json`, never replaces a status line of your own,
+   and `claude-code-statusline off` removes it.
+2. **Already blocked?** After switching, if Claude Code offers **"resume from
+   summary"**, choose it.
+3. **Or start a new session** on the new account and ask it to continue from
+   the previous one - it reads only what it needs.
 
 ---
 
