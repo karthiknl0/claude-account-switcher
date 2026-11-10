@@ -118,7 +118,11 @@ Check 'missing config is detected'                     ((Get-ProfileState (Join-
 # 3. Saving a snapshot.
 $acct = Join-Path $DtStore 'a@x.com'
 $snap = Join-Path $acct 'profile'
-Check 'snapshot copy succeeds'                         (Copy-ClaudeProfile $live $snap)
+# (an old-style copy that still contains a cache folder is already there)
+Put (Join-Path $snap 'Cache\old-junk.bin') 'junk-from-version-3'
+Put (Join-Path $snap 'claude-code\1.0.0\claude.exe') 'old-bundled-cli'
+Check 'snapshot copy succeeds'                         (Copy-ClaudeProfile $live $snap $true)
+Check 'old cache/CLI junk in the saved copy is removed' (-not (Test-Path (Join-Path $snap 'Cache')) -and -not (Test-Path (Join-Path $snap 'claude-code')))
 Put (Join-Path $acct 'meta.json') '{"email":"a@x.com"}'
 Check 'snapshot has the sign-in and storage'           ((Test-Path (Join-Path $snap 'config.json')) -and (Test-Path (Join-Path $snap 'Local Storage\leveldb\000003.log')) -and (Test-Path (Join-Path $snap 'Network\Cookies')))
 Check 'snapshot leaves out cache and bundled CLI'      (-not (Test-Path (Join-Path $snap 'Cache')) -and -not (Test-Path (Join-Path $snap 'claude-code')))
@@ -142,6 +146,31 @@ Clear-ClaudeProfile $live
 Check 'clear removes the sign-in'                      (-not (Test-Path (Join-Path $live 'config.json')))
 Check 'clear keeps the bundled CLI'                    (Test-Path (Join-Path $live 'claude-code\9.9.9\claude.exe'))
 Check 'saved snapshot survives the clear'              ((Get-ProfileState $snap).State -eq 'SIGNEDIN')
+
+# 6. Storage: one saved copy per account, one backup, nothing accumulates.
+$filesBefore = @(Get-ChildItem $snap -Recurse -Force -File).Count
+[void](Copy-ClaudeProfile $snap $live)
+Put (Join-Path $live 'Local Storage\leveldb\000004.log') 'newer-data'
+[void](Copy-ClaudeProfile $live $snap $true)
+[void](Copy-ClaudeProfile $live $snap $true)
+Check 'saving again overwrites the same copy (data updated)' ((Test-Path (Join-Path $snap 'Local Storage\leveldb\000004.log')) -and @(Get-ChildItem $snap -Recurse -Force -File).Count -eq ($filesBefore + 1))
+Check 'the sign-in survives the overwrite'             ((Get-ProfileState $snap).Token -eq 'tok-live')
+Check 'only one folder exists for the account'         (@(Get-ChildItem $acct -Force).Count -eq 2)
+[void](Copy-ClaudeProfile $live (Join-Path $DtBackup 'profile') $true)
+Put (Join-Path $DtStore '.backup-20260101-000000\profile\big.bin') ('x' * 2000)
+Put (Join-Path $DtStore '.backup-20260202-000000\profile\big.bin') ('x' * 2000)
+Put (Join-Path $DtStore 'not-an-account\stuff.bin') 'x'
+Put (Join-Path $acct 'Cookies-old-format\c') 'x'
+Check 'leftovers from older versions are detected'     (@(Get-StoreLeftovers).Count -eq 4)
+Remove-OldBackups
+Check 'old timestamped backups are removed on switch'  (@(Get-ChildItem $DtStore -Directory -Force -Filter '.backup-*').Count -eq 0 -and (Test-Path (Join-Path $DtBackup 'profile')))
+$sh = (Get-Process -Id $PID).Path
+$env:HOMEDRIVE = $env:USERPROFILE.Substring(0, 2); $env:HOMEPATH = $env:USERPROFILE.Substring(2); $env:HOME = $env:USERPROFILE
+$out = ('y' | & $sh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'src\claude-cleanup.ps1') 2>&1 | ForEach-Object { "$_" }) -join "`n"
+Check 'cleanup removes the remaining leftovers'        (@(Get-StoreLeftovers).Count -eq 0)
+Check 'cleanup keeps the saved copy and its sign-in'   ((Get-ProfileState $snap).Token -eq 'tok-live')
+Check 'cleanup keeps the single backup'                (Test-Path (Join-Path $DtBackup 'profile'))
+if ($fails) { Write-Host $out }
 
 Write-Host ""
 if ($fails) { Write-Host "$fails check(s) FAILED" -ForegroundColor Red; exit 1 }

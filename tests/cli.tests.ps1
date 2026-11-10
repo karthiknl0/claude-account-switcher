@@ -117,6 +117,15 @@ Remove-Item (Join-Path $bDir '.credentials.json') -Force
 $out = Run-Script 'claude-code-switch.ps1' @() @('b@x.com')
 Check 'switch to signed-out account: warns' ($out -like '*not signed in*')
 
+# 7. Cleanup: dead 3.x token files go, accounts and logins stay.
+[System.IO.File]::WriteAllText((Join-Path $store 'a@x.com.json'), '{"email":"a@x.com","credentials":{"claudeAiOauth":{"accessToken":"dead"}}}', $utf8)
+[System.IO.File]::WriteAllText((Join-Path $store 'notyet@x.com.json'), '{"email":"notyet@x.com","credentials":{"claudeAiOauth":{"accessToken":"dead"}}}', $utf8)
+$out = Run-Script 'claude-cleanup.ps1' @('y')
+Check 'cleanup: dead token file of a re-added account is removed' (-not (Test-Path (Join-Path $store 'a@x.com.json')))
+Check 'cleanup: reminder for a not-yet-re-added account is kept'  (Test-Path (Join-Path $store 'notyet@x.com.json'))
+Check 'cleanup: registry and logins are untouched'               ((Test-Path $reg) -and ((Get-Content (Join-Path $main '.credentials.json') -Raw) -eq $mainCredsBefore))
+if ($fails) { Write-Host $out }
+
 try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
 Write-Host ""
 if ($fails) { Write-Host "$fails check(s) FAILED" -ForegroundColor Red; exit 1 }

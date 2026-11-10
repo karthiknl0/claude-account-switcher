@@ -37,6 +37,7 @@ $AddPath     = Join-Path $ToolsDir 'claude-add.ps1'
 $CcSwitchPath= Join-Path $ToolsDir 'claude-code-switch.ps1'
 $CcAddPath   = Join-Path $ToolsDir 'claude-code-add.ps1'
 $CcDoctorPath= Join-Path $ToolsDir 'claude-code-doctor.ps1'
+$CleanupPath = Join-Path $ToolsDir 'claude-cleanup.ps1'
 $CcCommonPath= Join-Path $ToolsDir 'cc-common.ps1'
 $DtCommonPath= Join-Path $ToolsDir 'desktop-common.ps1'
 $VersionPath = Join-Path $ToolsDir '.version'
@@ -57,6 +58,7 @@ try {
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-switch.ps1" -OutFile $CcSwitchPath
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-add.ps1"    -OutFile $CcAddPath
     Invoke-RestMethod -Uri "$RawBase/src/claude-code-doctor.ps1" -OutFile $CcDoctorPath
+    Invoke-RestMethod -Uri "$RawBase/src/claude-cleanup.ps1"     -OutFile $CleanupPath
     Invoke-RestMethod -Uri "$RawBase/src/cc-common.ps1"          -OutFile $CcCommonPath
     if ($PlatformWin) {
         Invoke-RestMethod -Uri "$RawBase/src/desktop-common.ps1" -OutFile $DtCommonPath
@@ -100,6 +102,7 @@ function claude-add-account    { & "__ADD__" }
 function claude-code-switch    { & "__CCSWITCH__" @args }
 function claude-code-add       { & "__CCADD__" }
 function claude-code-doctor    { & "__CCDOCTOR__" }
+function claude-switch-cleanup { & "__CLEANUP__" }
 # Runs the real `claude` as the account chosen with claude-code-switch. Each
 # account has its own Claude Code config folder; the choice is the one line in
 # ~/.claude-cc-accounts/.active ('default' = your normal ~/.claude folder).
@@ -133,6 +136,7 @@ __END__
     $func = $func.Replace('__SWITCH__', $SwitchPath).Replace('__ADD__', $AddPath)
     $func = $func.Replace('__CCSWITCH__', $CcSwitchPath).Replace('__CCADD__', $CcAddPath)
     $func = $func.Replace('__CCDOCTOR__', $CcDoctorPath).Replace('__RAW__', $MainRawBase)
+    $func = $func.Replace('__CLEANUP__', $CleanupPath)
     foreach ($pf in $profiles) {
         $dir = Split-Path $pf
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -208,6 +212,7 @@ __END__
     Write-Host "    claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
     Write-Host "    claude-code-doctor      check setup (both switchers: logins, accounts, folders)" -ForegroundColor Gray
     Write-Host ""
+    Write-Host "  claude-switch-cleanup     show disk use and remove leftovers from older versions" -ForegroundColor Gray
     Write-Host "  claude-switch-update      update to the latest version" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  Updating from 3.x? Run claude-code-add and claude-add-account once -" -ForegroundColor Yellow
@@ -234,6 +239,7 @@ __BEGIN__
 claude-code-switch() { pwsh -NoProfile -File "__CCSWITCH__" "$@"; }
 claude-code-add()    { pwsh -NoProfile -File "__CCADD__"; }
 claude-code-doctor() { pwsh -NoProfile -File "__CCDOCTOR__"; }
+claude-switch-cleanup() { pwsh -NoProfile -File "__CLEANUP__"; }
 claude-switch-update() { CLAUDE_SWITCHER_REF= pwsh -NoProfile -Command "irm __RAW__/install.ps1 | iex"; }
 # Runs the real `claude` as the account chosen with claude-code-switch. Each
 # account has its own Claude Code config folder; the choice is the one line in
@@ -256,6 +262,7 @@ __END__
     $block = $block.Replace('__BEGIN__', $beginMark).Replace('__END__', $endMark)
     $block = $block.Replace('__CCSWITCH__', $CcSwitchPath).Replace('__CCADD__', $CcAddPath)
     $block = $block.Replace('__CCDOCTOR__', $CcDoctorPath).Replace('__RAW__', $MainRawBase)
+    $block = $block.Replace('__CLEANUP__', $CleanupPath)
 
     $rcFiles = @(
         (Join-Path $HOME '.bashrc'),
@@ -291,6 +298,7 @@ __END__
     Write-Host "  claude-code-add         save each account (signs each one in, once)" -ForegroundColor Gray
     Write-Host "  claude-code-switch      switch, then 'claude --resume' to continue work" -ForegroundColor Gray
     Write-Host "  claude-code-doctor      check setup (logins, accounts, folders)" -ForegroundColor Gray
+    Write-Host "  claude-switch-cleanup   show disk use and remove leftovers from older versions" -ForegroundColor Gray
     Write-Host "  claude-switch-update    update to the latest version" -ForegroundColor Gray
     Write-Host ""
     Write-Host "Updating from 3.x? Run claude-code-add once - accounts are stored differently now." -ForegroundColor Yellow

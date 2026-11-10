@@ -121,19 +121,18 @@ if (-not (Stop-Claude $root)) {
     Start-Sleep -Seconds 3; return
 }
 
-# Back up the complete live profile so a bad swap is recoverable.
-$backup = Join-Path $DtStore ('.backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+# Back up the live profile so a bad swap is recoverable. There is ONE backup
+# slot and it is overwritten in place on every switch - nothing accumulates.
+$backup = $DtBackup
 Write-Host "Backing up current profile..." -ForegroundColor DarkGray
-if (-not (Copy-ClaudeProfile $root (Join-Path $backup 'profile'))) {
+if (-not (Copy-ClaudeProfile $root (Join-Path $backup 'profile') $true)) {
     Write-Host "Could not back up the current profile. Refusing to switch." -ForegroundColor Red
     [void](Start-Claude)
     Start-Sleep -Seconds 3; return
 }
 
-# Keep only the most recent backup (complete profiles are large).
-Get-ChildItem $DtStore -Directory -Filter '.backup-*' -Force -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -Skip 1 |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Timestamped backups left by older versions are no longer needed.
+Remove-OldBackups
 
 # Sync the live profile back into its account's snapshot before loading another
 # one (the app rotates its session while it runs, so the snapshot taken at
@@ -142,8 +141,17 @@ Get-ChildItem $DtStore -Directory -Filter '.backup-*' -Force -ErrorAction Silent
 # signed-out or foreign session.
 if ($syncBack -and $currentAcct -and $currentAcct.Email -ne $chosen.Email) {
     Write-Host "Refreshing saved profile for $($currentAcct.Email)..." -ForegroundColor DarkGray
-    if (-not (Copy-ClaudeProfile $root $currentAcct.Profile)) {
-        Write-Host "Could not refresh the current profile. Refusing to switch." -ForegroundColor Red
+    # The account's ONE saved copy is overwritten in place with its current
+    # data. Its sign-in must survive that: if the refreshed copy does not show
+    # the sign-in the live profile had, redo it once from the backup (an
+    # identical copy of the live profile) and refuse to switch if that fails.
+    $ok = Copy-ClaudeProfile $root $currentAcct.Profile $true
+    if ($ok -and $live.State -eq 'SIGNEDIN' -and (Get-ProfileState $currentAcct.Profile).State -ne 'SIGNEDIN') {
+        $ok = (Copy-ClaudeProfile (Join-Path $backup 'profile') $currentAcct.Profile $true) -and
+              ((Get-ProfileState $currentAcct.Profile).State -eq 'SIGNEDIN')
+    }
+    if (-not $ok) {
+        Write-Host "Could not refresh the saved copy of $($currentAcct.Email). Refusing to switch (nothing was changed in the app)." -ForegroundColor Red
         [void](Start-Claude)
         Start-Sleep -Seconds 3; return
     }
