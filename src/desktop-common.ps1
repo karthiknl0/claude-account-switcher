@@ -29,7 +29,8 @@ $DtUtf8    = New-Object System.Text.UTF8Encoding($false)
 # Not account state: never copied into / deleted from a snapshot, and never
 # purged from the live profile when a snapshot is restored.
 $DtExcludeDirs = @('claude-code', 'vm_bundles', 'Cache', 'Code Cache', 'GPUCache',
-                   'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'Crashpad', 'logs')
+                   'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache',
+                   'ShaderCache', 'component_crx_cache', 'Crashpad', 'logs')
 # Kept in place when the live profile is cleared for a fresh sign-in.
 $DtKeepOnClear = @('claude-code', 'vm_bundles')
 
@@ -219,7 +220,11 @@ function Start-Claude {
 # -- Copying a profile ---------------------------------------------------------
 # Mirror $source into $destination, leaving the excluded (non-account) folders
 # alone on both sides.
-function Copy-ClaudeProfile($source, $destination) {
+# $prune = $true is used when the DESTINATION is a saved copy (an account
+# snapshot or the backup): any cache / bundled-CLI folders already sitting in
+# it (copies saved by versions before 4.0 included them - hundreds of MB) are
+# deleted, so a saved copy only ever holds account state.
+function Copy-ClaudeProfile($source, $destination, $prune) {
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     robocopy $source $destination /MIR /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /XD @DtExcludeDirs /XF '.user-data-left*' | Out-Null
     if ($LASTEXITCODE -gt 7) { return $false }
@@ -228,7 +233,61 @@ function Copy-ClaudeProfile($source, $destination) {
     # a restored profile can prevent Electron from starting cleanly.
     Get-ChildItem $destination -Force -Filter 'Singleton*' -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
+    if ($prune) {
+        Get-ChildItem $destination -Directory -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { $DtExcludeDirs -contains $_.Name } |
+            Sort-Object { $_.FullName.Length } |
+            ForEach-Object { [void](Remove-TreeHard $_.FullName) }
+    }
     return $true
+}
+
+# -- Storage: ONE saved copy per account, ONE backup ---------------------------
+# Saving or switching always overwrites the same folders:
+#   ~/.claude-accounts/<email>/profile   the account's saved copy
+#   ~/.claude-accounts/.backup/profile   the profile that was live before the last switch
+# Nothing is ever added next to them, so disk use does not grow with use.
+$DtBackup = Join-Path $DtStore '.backup'
+
+function Remove-TreeHard($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $true }
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) {
+        # Very long paths defeat Remove-Item under Windows PowerShell 5.1.
+        & cmd.exe /c "rd /s /q `"$path`"" 2>$null | Out-Null
+    }
+    return (-not (Test-Path -LiteralPath $path))
+}
+
+function Get-DirSizeMB($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return 0 }
+    $sum = [int64]0
+    Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $sum += $_.Length }
+    return [math]::Round($sum / 1MB, 1)
+}
+
+# Timestamped backups written by versions before 4.2 (".backup-<date>").
+function Remove-OldBackups {
+    Get-ChildItem $DtStore -Directory -Filter '.backup-*' -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { [void](Remove-TreeHard $_.FullName) }
+}
+
+# Everything in the store that this version does not use: old timestamped
+# backups, folders that are not a saved account, and files/folders older
+# versions kept beside an account's 'profile' folder.
+function Get-StoreLeftovers {
+    $out = @()
+    if (-not (Test-Path $DtStore)) { return $out }
+    foreach ($d in @(Get-ChildItem $DtStore -Directory -Force -ErrorAction SilentlyContinue)) {
+        if ($d.Name -eq '.backup') { continue }
+        if ($d.Name -like '.backup-*') { $out += $d.FullName; continue }
+        if (-not (Test-Path (Join-Path $d.FullName 'meta.json'))) { $out += $d.FullName; continue }
+        foreach ($c in @(Get-ChildItem $d.FullName -Force -ErrorAction SilentlyContinue)) {
+            if ($c.Name -ne 'profile' -and $c.Name -ne 'meta.json') { $out += $c.FullName }
+        }
+    }
+    return $out
 }
 
 # Empty the live profile so the app opens at a sign-in screen. $root is the

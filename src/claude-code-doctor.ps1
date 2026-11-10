@@ -148,6 +148,13 @@ if ($PlatformWin) {
         Write-Host "      $($s.Email)" -NoNewline
         Write-Host "  - $state" -ForegroundColor $color
     }
+    $used = Get-DirSizeMB $DtStore
+    $left = @(Get-StoreLeftovers)
+    if ($left.Count -gt 0) {
+        Show-Line "Disk use" ("{0} MB, including {1} leftover item(s) from older versions - run 'claude-switch-cleanup'" -f $used, $left.Count) 'Yellow'
+    } else {
+        Show-Line "Disk use" ("{0} MB (one saved copy per account + one backup)" -f $used)
+    }
 }
 
 Write-Host ""

@@ -86,7 +86,7 @@ This installs:
 - Scripts in `~/.claude-tools/`
 - Commands: `claude-add-account`, `claude-switch-account` (desktop app);
   `claude-code-add`, `claude-code-switch`, `claude-code-doctor` (Claude Code
-  CLI); `claude-switch-update`
+  CLI); `claude-switch-cleanup`, `claude-switch-update`
 - A small **`claude` wrapper** in your shell profile, so the `claude` command
   runs as the account you picked with `claude-code-switch`
 - Desktop shortcuts (Windows)
@@ -174,6 +174,28 @@ claude --resume             # continue the same conversation on the new account
 
 ---
 
+## Storage: one copy per account, nothing piles up
+
+- Each desktop account has **exactly one saved copy**
+  (`~/.claude-accounts/<email>/profile/`). Every switch **overwrites that same
+  copy** with the account's latest data - it never creates another one.
+- There is **one backup** (`~/.claude-accounts/.backup/`), also overwritten on
+  every switch. It is what "go back to the previous account" uses.
+- The overwrite is protected: an account's saved copy is only refreshed from a
+  session that is verified to be signed in as that account, and the switch is
+  cancelled if the refreshed copy does not still contain the sign-in. A
+  signed-out or wrong-account session can never replace a good saved login.
+- Claude Code (CLI) accounts store **no copies at all** - each account is just
+  its own signed-in folder, and transcripts are shared, not duplicated.
+- Caches and the app's bundled Claude Code are never saved, and are stripped
+  out of copies made by older versions the next time they are refreshed.
+
+Run **`claude-switch-cleanup`** to see how much space is used and to remove
+leftovers from older versions (timestamped backups, old-format copies, dead
+token files). It lists everything and asks before deleting.
+
+---
+
 ## Built to survive Claude updates
 
 Claude changes often, so version 4.1 does not assume it knows where things are:
@@ -225,8 +247,8 @@ usage.
 (cookies, Local Storage, IndexedDB and an encrypted sign-in cache), not one
 token file. `claude-add-account` closes Claude and snapshots that profile into
 `~/.claude-accounts/<email>/profile/`. `claude-switch-account` closes Claude,
-backs up the live profile (keeps the last backup), refreshes the snapshot of
-the account you are leaving, restores the one you chose, and restarts the app.
+backs up the live profile, refreshes the saved copy of the account you are
+leaving, restores the one you chose, and restarts the app.
 Caches and the app's bundled Claude Code are not account state and are left
 out, so snapshots are small.
 
@@ -259,7 +281,7 @@ Remove-Item -Recurse -Force ~/.claude-cc-accounts    # Claude Code account folde
   Windows key tied to your user account. Don't copy `~/.claude-accounts` to
   another PC, and never commit it anywhere — it contains live login sessions.
 - If a desktop switch leaves Claude in a weird state, your previous profile is
-  in `~/.claude-accounts/.backup-<timestamp>/`.
+  in `~/.claude-accounts/.backup/` (the switcher offers to restore it).
 - **Sign-in can still be required by Claude.** A server-side session expiry,
   security check, or organization policy cannot be bypassed locally. If an
   account shows "NOT signed in", run the matching add command for it again.

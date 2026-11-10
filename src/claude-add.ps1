@@ -70,7 +70,7 @@ $dest        = Join-Path $DtStore (Get-SafeName $email)
 $profileDest = Join-Path $dest 'profile'
 
 Write-Host "Saving complete profile for $email ..." -ForegroundColor Cyan
-if (-not (Copy-ClaudeProfile $root $profileDest)) {
+if (-not (Copy-ClaudeProfile $root $profileDest $true)) {
     Write-Host "Could not save the complete Claude profile. No account was changed." -ForegroundColor Red
     [void](Start-Claude)
     Start-Sleep -Seconds 3; return
