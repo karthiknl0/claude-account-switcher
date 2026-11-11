@@ -95,6 +95,15 @@ Set-RootCache $root
 if ($syncBack -and $currentAcct -and $chosen.Email -eq $currentAcct.Email) {
     # Restoring an account's older snapshot over its own live session would
     # replace a fresh login with a stale one.
+    # No swap happens for the account you are sitting on, so the usual sharing
+    # step below never runs for it. Add the missing Code-tab entries straight
+    # into the live profile (add-only, new files only - safe while the app is
+    # open; it lists them the next time it starts).
+    $carried = Sync-CodeSessions @($list | ForEach-Object { $_.Profile }) $root
+    if ($carried -gt 0) {
+        Write-Host "Added $carried Code session(s) from your saved accounts to this account's list." -ForegroundColor Green
+        Write-Host "Close and reopen the Claude app to see them." -ForegroundColor Yellow
+    }
     if ($liveEmail) {
         Write-Host "Already on $($chosen.Email)." -ForegroundColor Green
         Set-CurrentMarker $chosen.Email

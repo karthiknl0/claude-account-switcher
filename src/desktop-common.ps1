@@ -567,7 +567,9 @@ function Wait-LiveAccount($root, $expectEmail, $seconds) {
 # profile that is about to be loaded, so any account can open and continue any
 # session. Rules that keep it safe:
 #   * add-only: an entry the target already has is never changed or replaced
-#   * a session the target account deleted (deleted_* marker) stays deleted
+#   * a session the target account deleted (deleted_* marker, in this copy or
+#     in another saved copy of the same account) stays deleted
+#   * only the folder of the account the profile is signed in to is filled
 #   * one entry per conversation (no duplicates by cliSessionId)
 #   * only local_*.json is copied - never sign-in data, settings or tasks
 # Regular claude.ai chats are NOT local files (they live in each account on
@@ -596,12 +598,14 @@ function Sync-CodeSessions($sourceProfiles, $targetProfile) {
         if ($dests.Count -eq 0) { return 0 }      # this account has not used the Code tab yet
         # The account the profile belongs to, when the app recorded it.
         try {
-            $acctId = [string]((Get-Content (Join-Path $targetProfile 'config.json') -Raw | ConvertFrom-Json).lastKnownAccountUuid)
-            if ($acctId) {
-                $own = @($dests | Where-Object { (Split-Path (Split-Path $_ -Parent) -Leaf) -eq $acctId })
-                if ($own.Count -gt 0) { $dests = $own }
-            }
-        } catch {}
+            $acctId = [string]((Get-Content (Join-Path $targetProfile 'config.json') -Raw -ErrorAction Stop | ConvertFrom-Json).lastKnownAccountUuid)
+        } catch { $acctId = '' }
+        if ($acctId) {
+            # Never fill another account's folder: if the signed-in account has
+            # none yet, it has not used the Code tab - nothing to add to.
+            $dests = @($dests | Where-Object { (Split-Path (Split-Path $_ -Parent) -Leaf) -eq $acctId })
+            if ($dests.Count -eq 0) { return 0 }
+        }
 
         $sources = @()
         foreach ($p in @($sourceProfiles)) {
@@ -618,6 +622,14 @@ function Sync-CodeSessions($sourceProfiles, $targetProfile) {
                     $c = Get-SessionCliId $f.FullName
                     if ($c) { $haveCli[$c] = $true }
                 }
+            }
+            # Another copy of this same account (same account\org folder) may
+            # remember deletions this copy has lost - honour those too.
+            $destKey = (Split-Path (Split-Path $dest -Parent) -Leaf) + '\' + (Split-Path $dest -Leaf)
+            foreach ($src in $sources) {
+                if ($src -eq $dest) { continue }
+                if (((Split-Path (Split-Path $src -Parent) -Leaf) + '\' + (Split-Path $src -Leaf)) -ne $destKey) { continue }
+                foreach ($f in @(Get-ChildItem $src -File -Force -Filter 'deleted_*' -ErrorAction SilentlyContinue)) { $deleted += $f.Name }
             }
             foreach ($src in $sources) {
                 if ($src -eq $dest) { continue }

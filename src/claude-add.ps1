@@ -69,9 +69,19 @@ if (-not (Stop-Claude $root)) {
 $dest        = Join-Path $DtStore (Get-SafeName $email)
 $profileDest = Join-Path $dest 'profile'
 
+# Bring the Code-tab sessions of every saved account (including an older copy
+# of this one, which is about to be overwritten) into the live profile first,
+# so they are saved with it and listed when the app reopens. Index entries
+# only, add-only; an account that has not opened the Code tab yet has no list
+# to add to and is skipped - see Sync-CodeSessions.
+$carried = Sync-CodeSessions @(Get-SavedAccounts | ForEach-Object { $_.Profile }) $root
+if ($carried -gt 0) {
+    Write-Host "Added $carried Code session(s) from your saved accounts to this account's list." -ForegroundColor DarkGray
+}
+
 Write-Host "Saving complete profile for $email ..." -ForegroundColor Cyan
 if (-not (Copy-ClaudeProfile $root $profileDest $true)) {
-    Write-Host "Could not save the complete Claude profile. No account was changed." -ForegroundColor Red
+    Write-Host "Could not save the complete Claude profile. The account was not saved." -ForegroundColor Red
     [void](Start-Claude)
     Start-Sleep -Seconds 3; return
 }

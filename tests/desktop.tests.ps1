@@ -193,6 +193,23 @@ Check 'only session entries are copied'                    (-not (Test-Path (Joi
 Check 'running it again adds nothing'                      ((Sync-CodeSessions @($profA) $profB) -eq 0)
 Check 'an account that never used Code is skipped safely'  ((Sync-CodeSessions @($profA) $sC) -eq 0)
 Check 'the source account is not modified'                 (@(Get-ChildItem $sA -File).Count -eq 4)
+# The account you are sitting on (the live profile) gets them too, and only in
+# the folder of the account that profile is signed in to.
+$live7   = Join-Path $work 'sess\live'
+$liveOwn = Join-Path $live7 'claude-code-sessions\acct-b\org-b'
+$liveOld = Join-Path $live7 'claude-code-sessions\acct-old\org-old'
+Put (Join-Path $live7 'config.json') '{"lastKnownAccountUuid":"acct-b"}'
+Put (Join-Path $liveOwn 'local_5555.json') '{"cliSessionId":"cli-5","title":"live own"}'
+Put (Join-Path $liveOld 'scheduled-tasks.json') '{"tasks":[]}'
+$n = Sync-CodeSessions @($profA, $profB, $live7) $live7
+Check 'the live profile gets the saved accounts'' sessions'  ($n -eq 2 -and (Test-Path (Join-Path $liveOwn 'local_1111.json')) -and (Test-Path (Join-Path $liveOwn 'local_9999.json')) -and -not (Test-Path (Join-Path $liveOwn 'local_3333.json')))
+Check 'a deletion remembered by the saved copy is kept'     (-not (Test-Path (Join-Path $liveOwn 'local_2222.json')))
+$fresh = Join-Path $work 'sess\fresh'
+Put (Join-Path $fresh 'config.json') '{"lastKnownAccountUuid":"acct-new"}'
+Put (Join-Path $fresh 'claude-code-sessions\acct-old\org-old\scheduled-tasks.json') '{"tasks":[]}'
+Check 'another account''s folder is never filled'            ((Sync-CodeSessions @($profA) $fresh) -eq 0 -and @(Get-ChildItem $fresh -Recurse -File -Filter 'local_*.json').Count -eq 0)
+Check 'only the signed-in account''s folder is filled'       (@(Get-ChildItem $liveOld -File -Filter 'local_*.json').Count -eq 0)
+Check 'the live profile''s own entry is left untouched'      ((Get-Content (Join-Path $liveOwn 'local_5555.json') -Raw) -like '*live own*')
 Put (Join-Path $DtStore '.no-session-share') ''
 Put (Join-Path $sA 'local_4444.json') '{"cliSessionId":"cli-4"}'
 Check 'sharing can be switched off'                        ((Sync-CodeSessions @($profA) $profB) -eq 0)

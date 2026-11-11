@@ -186,7 +186,9 @@ and the same project files.
 Details of the Code-tab sharing: it only **adds** list entries — nothing an
 account already has is changed, sessions you deleted stay deleted, and no
 sign-in data is copied. An account that has never opened the Code tab gets the
-list from its second switch onwards. To turn it off, create an empty file
+list from its second switch onwards. The account you are already on gets them
+too: run `claude-switch-account`, pick the account marked `*`, then close and
+reopen the app (`claude-add-account` does the same while it saves). To turn it off, create an empty file
 `~/.claude-accounts/.no-session-share`.
 
 ---
